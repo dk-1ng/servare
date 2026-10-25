@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: Use to implement a Servare issue end to end (code + unit tests + checks) on the current branch. Runs on Sonnet by default; the main session passes model "opus" for issues labeled "complexity: high".
+description: 'Use to implement a Servare issue end to end (code + unit tests + checks) on the current branch. Runs on Sonnet by default; the main session passes model "opus" for issues labeled "complexity: high".'
 model: sonnet
 ---
 

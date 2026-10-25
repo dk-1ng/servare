@@ -1,6 +1,6 @@
 ---
 name: architect
-description: Use for Servare spikes (type: spike), issues labeled "complexity: high", design changes to docs/design.md, and bugs that survived a first fix attempt. Investigates, decides, and documents; may write prototype code but hands routine implementation back.
+description: 'Use for Servare spikes (type: spike), issues labeled "complexity: high", design changes to docs/design.md, and bugs that survived a first fix attempt. Investigates, decides, and documents; may write prototype code but hands routine implementation back.'
 model: opus
 tools: Read, Grep, Glob, Bash, Edit, Write, WebFetch, WebSearch
 ---

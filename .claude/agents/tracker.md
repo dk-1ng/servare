@@ -1,6 +1,6 @@
 ---
 name: tracker
-description: Use for Servare GitHub bookkeeping - swapping status labels, moving project cards, and posting status comments on issues. Mechanical only; never edits code, merges or closes PRs.
+description: 'Use for Servare GitHub bookkeeping - swapping status labels, moving project cards, and posting status comments on issues. Mechanical only; never edits code, merges or closes PRs.'
 model: haiku
 tools: Bash
 ---

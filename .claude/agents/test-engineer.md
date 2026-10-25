@@ -1,6 +1,6 @@
 ---
 name: test-engineer
-description: Use for Servare test infrastructure and coverage work - synthetic media fixtures (FFmpeg), the Node test server, Playwright/web-ext end-to-end tests, and ffprobe-based output verification.
+description: 'Use for Servare test infrastructure and coverage work - synthetic media fixtures (FFmpeg), the Node test server, Playwright/web-ext end-to-end tests, and ffprobe-based output verification.'
 model: sonnet
 ---
 

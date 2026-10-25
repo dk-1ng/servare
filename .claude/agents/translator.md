@@ -1,6 +1,6 @@
 ---
 name: translator
-description: Use when README.md changes, to bring the Servare README translations in docs/readme/ (pt-BR, es, fr, de, ru, zh-CN, ja) back in sync with the English original.
+description: 'Use when README.md changes, to bring the Servare README translations in docs/readme/ (pt-BR, es, fr, de, ru, zh-CN, ja) back in sync with the English original.'
 model: sonnet
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
