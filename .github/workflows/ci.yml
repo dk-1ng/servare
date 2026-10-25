@@ -24,6 +24,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install fixture tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xxd
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test

@@ -95,7 +95,7 @@ export type TestServer = {
   close(): Promise<void>;
 };
 
-type LiveState = { head: number };
+type LiveState = { head: number; windowSize: number; total: number };
 
 export async function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
   const host = options.host ?? '127.0.0.1';
@@ -205,6 +205,9 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     if (truncated) res.destroy(); // fewer bytes than Content-Length: the client sees a cut download
   }
 
+  const isIntIn = (n: number, min: number, max: number): boolean =>
+    Number.isInteger(n) && n >= min && n <= max;
+
   /** Live HLS: each playlist fetch advances the window by one segment (no wall clock). */
   async function serveLive(
     res: ServerResponse,
@@ -227,16 +230,22 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
       }
     });
     const count = segments.length;
+    // Options come from the first playlist request; segment URIs are bare, so state is per name.
     const windowSize = Number(query.get('window') ?? 3);
     const total = Number(query.get('total') ?? 0); // 0 = never ends
-    const key = `${name}?${query.toString()}`;
+    const key = name;
+    if (file === 'index.m3u8' && (!isIntIn(windowSize, 1, 100) || !isIntIn(total, 0, 1000))) {
+      send(res, 400, 'window must be 1..100 and total 0..1000');
+      return;
+    }
 
     if (file === 'index.m3u8') {
-      const state = liveStates.get(key) ?? { head: windowSize };
+      const state = liveStates.get(key) ?? { head: windowSize, windowSize, total };
       liveStates.set(key, state);
+      const { windowSize: win, total: end } = state;
       const head = state.head; // exclusive: segments [first, head) are listed
-      const first = Math.max(0, head - windowSize);
-      const ended = total > 0 && head >= total;
+      const first = Math.max(0, head - win);
+      const ended = end > 0 && head >= end;
       let out = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${Math.ceil(Math.max(...segments.map((s) => s.duration)))}\n`;
       out += `#EXT-X-MEDIA-SEQUENCE:${first}\n`;
       out += `#EXT-X-DISCONTINUITY-SEQUENCE:${first >= 1 ? Math.floor((first - 1) / count) : 0}\n`;
@@ -245,7 +254,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
         out += `#EXTINF:${(segments[seq % count]?.duration ?? 2).toFixed(3)},\nseg-${seq}.ts\n`;
       }
       if (ended) out += '#EXT-X-ENDLIST\n';
-      else if (total === 0 || head < total) state.head = head + 1;
+      else if (end === 0 || head < end) state.head = head + 1;
       send(res, 200, out, { 'content-type': MIME['.m3u8'] ?? '', 'cache-control': 'no-store' });
       return;
     }
@@ -356,7 +365,13 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     if (live) return serveLive(res, live[1] ?? '', live[2] ?? '', url.searchParams);
 
     if (mediaPath.startsWith('/media/')) {
-      const file = safeJoin(fixturesDir, decodeURIComponent(mediaPath.slice('/media/'.length)));
+      let rel: string;
+      try {
+        rel = decodeURIComponent(mediaPath.slice('/media/'.length));
+      } catch {
+        return send(res, 400, 'bad path');
+      }
+      const file = safeJoin(fixturesDir, rel);
       if (!file) return send(res, 400, 'bad path');
       return serveFile(req, res, file);
     }

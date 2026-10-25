@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generates every synthetic media fixture with FFmpeg into test/fixtures/out/.
 # Sources are FFmpeg's built-in generators only (testsrc2, sine, hand-written WebVTT).
-# Nothing here downloads or embeds third-party media. Usage: test/fixtures/make.sh [--clean]
+# Nothing here downloads or embeds third-party media. Usage: test/fixtures/make.sh (always rebuilds out/ from scratch)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,9 +12,6 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   exit 2
 fi
 
-if [[ "${1:-}" == "--clean" ]]; then
-  rm -rf "$OUT"
-fi
 rm -rf "$OUT"
 mkdir -p "$OUT"
 cd "$OUT"

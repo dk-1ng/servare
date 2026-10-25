@@ -17,8 +17,12 @@ const hasFfprobe = hasTool('ffprobe');
 let server: TestServer;
 beforeAll(async () => {
   // Fixtures are generated on demand; without FFmpeg the fixture-backed suites are skipped.
-  if (hasFfmpeg && !existsSync(path.join(OUT, 'hls/variants/master.m3u8'))) {
-    execFileSync('bash', [path.join(ROOT, 'test/fixtures/make.sh')], { stdio: 'ignore' });
+  const missingFixture = CATALOG.some(
+    (e) =>
+      e.url.startsWith('/media/') && !existsSync(path.join(OUT, e.url.slice('/media/'.length))),
+  );
+  if (hasFfmpeg && missingFixture) {
+    execFileSync('bash', [path.join(ROOT, 'test/fixtures/make.sh')], { stdio: 'inherit' });
   }
   server = await startTestServer();
 }, 120_000);
@@ -118,8 +122,8 @@ describe('fault injection and access control', () => {
   });
 
   it('refuses path traversal', async () => {
-    const res = await get('/media/%2e%2e/%2e%2e/package.json');
-    expect(res.status).not.toBe(200);
+    expect((await get('/media/..%2f..%2fpackage.json')).status).toBe(400);
+    expect((await get('/media/%E0')).status).toBe(400);
   });
 
   it('records requests', async () => {
@@ -127,6 +131,22 @@ describe('fault injection and access control', () => {
     await get('/synthetic/10', { headers: { range: 'bytes=0-1' } });
     expect(server.requests).toHaveLength(1);
     expect(server.requests[0]).toMatchObject({ status: 206, range: 'bytes=0-1' });
+  });
+});
+
+describe('live option validation', () => {
+  it('rejects non-integer or out-of-range window and total', async () => {
+    for (const q of [
+      'window=abc',
+      'window=0',
+      'window=101',
+      'window=1.5',
+      'total=-1',
+      'total=1e9',
+    ]) {
+      expect((await get(`/live/v/index.m3u8?${q}`)).status, q).toBe(400);
+    }
+    expect((await get('/live/v/index.m3u8?window=1&total=1')).status).toBe(200);
   });
 });
 
@@ -180,8 +200,13 @@ describe.skipIf(!hasFfmpeg)('fixture-backed routes', () => {
     expect(sequences).toEqual([0, 1, 2, 3, 3, 3]);
     expect(last).toContain('#EXT-X-ENDLIST');
     // Segments inside the window are served; ones that were never published are not.
-    expect((await get('/live/t/seg-4.ts?window=2&total=5')).status).toBe(200);
-    expect((await get('/live/t/seg-9.ts?window=2&total=5')).status).toBe(404);
+    const uris = last.split('\n').filter((l) => l.endsWith('.ts'));
+    expect(uris.length).toBeGreaterThan(0);
+    for (const uri of uris) {
+      const segUrl = new URL(uri, `${server.origin}/live/t/index.m3u8`);
+      expect((await fetch(segUrl)).status).toBe(200);
+    }
+    expect((await get('/live/t/seg-9.ts')).status).toBe(404);
   });
 
   it('wraps the source segments with a discontinuity', async () => {
