@@ -90,14 +90,9 @@ export function createStore<S extends z.ZodType>(options: StoreOptions<S>): Stor
     return run;
   };
 
-  /** `unreadable` carries the raw stored value when it exists but could not be used. */
+  /** Rejects when the area fails, so writes never replace data that could not be read. `unreadable` carries the raw stored value when it exists but could not be used. */
   async function load(): Promise<{ value: T; unreadable?: unknown }> {
-    let raw: unknown;
-    try {
-      raw = (await area.get(key))[key];
-    } catch {
-      return { value: defaults() };
-    }
+    const raw = (await area.get(key))[key];
     if (raw === undefined) return { value: defaults() };
     if (isEnvelope(raw)) {
       const migrated = migrate(raw.data, raw.v, version, migrations);
@@ -118,7 +113,13 @@ export function createStore<S extends z.ZodType>(options: StoreOptions<S>): Stor
   }
 
   return {
-    get: async () => (await load()).value,
+    get: async () => {
+      try {
+        return (await load()).value;
+      } catch {
+        return defaults();
+      }
+    },
     set: (value) =>
       serialize(async () => {
         await write(value, (await load()).unreadable);

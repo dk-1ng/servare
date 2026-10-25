@@ -125,6 +125,17 @@ describe('createStore', () => {
     expect(await createStore(optionsV2(area)).get()).toEqual({ items: [] });
   });
 
+  it('does not overwrite stored data when the area fails to read', async () => {
+    const area = memoryArea();
+    const store = createStore(optionsV2(area));
+    await store.set({ items: [{ name: 'a', pinned: false }] });
+    const stored = area.data['list'];
+    area.get = () => Promise.reject(new Error('backend down'));
+    await expect(store.update((cur) => cur)).rejects.toThrow('backend down');
+    await expect(store.set({ items: [] })).rejects.toThrow('backend down');
+    expect(area.data['list']).toEqual(stored);
+  });
+
   it('rejects writes that do not match the schema', async () => {
     const store = createStore(optionsV2(memoryArea()));
     await expect(store.set({ items: [{ name: 'a' }] } as never)).rejects.toThrow();
