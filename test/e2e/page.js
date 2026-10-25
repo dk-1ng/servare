@@ -6,6 +6,21 @@ function connect() {
   return api.runtime.connect({ name: 'e2e' });
 }
 
+// Chromium erases private-window downloads from the history once they end, so `downloads.search`
+// no longer finds the tabless (private) jobs the suite starts. This page stays open and records them.
+const seen = new Map();
+api.downloads.onCreated.addListener((d) => {
+  seen.set(d.id, { id: d.id, filename: d.filename ?? '', state: d.state, bytes: d.fileSize });
+});
+api.downloads.onChanged.addListener((delta) => {
+  const d = seen.get(delta.id);
+  if (!d) return;
+  if (delta.filename?.current) d.filename = delta.filename.current;
+  if (delta.state?.current) d.state = delta.state.current;
+  if (delta.error?.current) d.error = delta.error.current;
+  if (delta.fileSize?.current !== undefined) d.bytes = delta.fileSize.current;
+});
+
 globalThis.e2e = {
   /** Sends the temporary 'download/start-direct' request over a port; resolves with {jobId}. */
   start(url, filename, tabId) {
@@ -106,14 +121,20 @@ globalThis.e2e = {
   estimate() {
     return navigator.storage.estimate();
   },
+  /** What the browser itself lists, without the recorded events. */
+  async history() {
+    return (await api.downloads.search({})).map((d) => d.filename);
+  },
   async downloads() {
     const items = await api.downloads.search({});
-    return items.map((d) => ({
+    const listed = items.map((d) => ({
       id: d.id,
       filename: d.filename,
       state: d.state,
       bytes: d.fileSize,
       error: d.error,
     }));
+    const ids = new Set(listed.map((d) => d.id));
+    return [...listed, ...[...seen.values()].filter((d) => !ids.has(d.id))];
   },
 };

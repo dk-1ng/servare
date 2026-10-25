@@ -10,6 +10,8 @@ export interface Platform {
   needsExtraHeaders: boolean;
   /** `downloads.download` accepts `incognito` on Firefox; Chromium rejects the unknown option. */
   downloadsIncognitoOption: boolean;
+  /** Chromium lists private-window downloads in the regular history, so they are erased from it. */
+  erasePrivateDownloads: boolean;
 }
 
 export function resolvePlatform(browserName: string): Platform {
@@ -19,6 +21,7 @@ export function resolvePlatform(browserName: string): Platform {
     needsOffscreenDocument: !isFirefox,
     needsExtraHeaders: !isFirefox,
     downloadsIncognitoOption: isFirefox,
+    erasePrivateDownloads: !isFirefox,
   };
 }
 

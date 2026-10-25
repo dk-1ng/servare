@@ -12,6 +12,8 @@ export interface DownloadsApiLike {
     incognito?: boolean;
   }): Promise<number>;
   search(query: { id?: number; url?: string }): Promise<{ id: number; state?: string }[]>;
+  /** Drops history entries only; the downloaded file stays on disk. */
+  erase?(query: { id?: number }): Promise<number[]>;
   /** Fires with the id even if the context that called `download()` was suspended meanwhile. */
   onCreated?: {
     addListener(cb: (item: { id: number; url: string }) => void): void;
@@ -62,6 +64,11 @@ export interface DeliveryAreas {
 export interface DeliveryOptions {
   /** Firefox accepts `incognito` in `downloads.download`; Chromium rejects the unknown option. */
   incognitoOption?: boolean;
+  /**
+   * Chromium cannot make the download incognito and its background is a spanning one, so a
+   * private job lands in the regular history. Erase that entry once the download ends.
+   */
+  erasePrivateHistory?: boolean;
 }
 
 /** How long an id-less entry may wait (e.g. an open save-as dialog) before it is given up on. */
@@ -257,6 +264,7 @@ export class Delivery {
 
   private async finish(downloadId: number, outcome: DeliveryOutcome): Promise<void> {
     let entry: Pending | undefined;
+    let wasPrivate = false as boolean;
     // Counted before the entry leaves the store: the host must not be closed in the gap
     // between the two, or the release would find no host and its OPFS file would be orphaned.
     this.releasing++;
@@ -266,6 +274,7 @@ export class Delivery {
           const found = list.find((e) => e.downloadId === downloadId);
           if (!found) return list;
           entry = found;
+          wasPrivate = store === this.sessionStore;
           return list.filter((e) => e !== found);
         });
         if (entry) break;
@@ -274,8 +283,20 @@ export class Delivery {
       this.releasing--;
       throw error;
     }
+    if (entry && wasPrivate && this.options.erasePrivateHistory) {
+      await this.eraseFromHistory(downloadId);
+    }
     if (entry) await this.runRelease(entry.jobId, outcome);
     else this.releasing--;
+  }
+
+  /** Best effort: a failure here must not keep the job's blob URL and OPFS file alive. */
+  private async eraseFromHistory(downloadId: number): Promise<void> {
+    try {
+      await this.downloads.erase?.({ id: downloadId });
+    } catch (error) {
+      console.error('[servare] could not erase a private download from the history', error);
+    }
   }
 
   /** Releases an entry already out of the store; the caller has raised `releasing`. */

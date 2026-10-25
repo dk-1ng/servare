@@ -11,7 +11,7 @@ function makeArea() {
   return { store, area };
 }
 
-function setup(options: { incognitoOption?: boolean } = {}) {
+function setup(options: { incognitoOption?: boolean; erasePrivateHistory?: boolean } = {}) {
   const local = makeArea();
   const session = makeArea();
   const areas = { local: local.area, session: session.area };
@@ -24,6 +24,7 @@ function setup(options: { incognitoOption?: boolean } = {}) {
   const downloads: DownloadsApiLike = {
     download: vi.fn(async () => 7),
     search: vi.fn(async () => [{ id: 7, state: 'in_progress' }]),
+    erase: vi.fn(async () => [7]),
     onChanged: { addListener: (cb) => (changed = cb) },
     onCreated: { addListener: (cb) => (created = cb) },
     onDeterminingFilename: { addListener: (cb) => (determining = cb) },
@@ -292,6 +293,37 @@ describe('Delivery', () => {
       fire({ id: 9, state: { current: 'complete' } });
       await flush();
       expect(release).toHaveBeenCalledWith('j1', 'complete');
+    });
+
+    it('erases a finished private download from the history, keeping the file', async () => {
+      const { delivery, downloads, fire, release } = setup({ erasePrivateHistory: true });
+      await delivery.deliver(priv);
+      fire({ id: 7, state: { current: 'complete' } });
+      await flush();
+      expect(downloads.erase).toHaveBeenCalledWith({ id: 7 });
+      expect(release).toHaveBeenCalledWith('j1', 'complete');
+    });
+
+    it('still releases the job when the erase fails', async () => {
+      const { delivery, downloads, fire, release } = setup({ erasePrivateHistory: true });
+      vi.mocked(downloads.erase!).mockRejectedValueOnce(new Error('nope'));
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      await delivery.deliver(priv);
+      fire({ id: 7, state: { current: 'interrupted' } });
+      await flush();
+      expect(release).toHaveBeenCalledWith('j1', 'interrupted');
+    });
+
+    it('does not erase regular downloads, nor when the platform does not ask for it', async () => {
+      const on = setup({ erasePrivateHistory: true });
+      await on.delivery.deliver(request);
+      on.fire({ id: 7, state: { current: 'complete' } });
+      const off = setup();
+      await off.delivery.deliver(priv);
+      off.fire({ id: 7, state: { current: 'complete' } });
+      await flush();
+      expect(on.downloads.erase).not.toHaveBeenCalled();
+      expect(off.downloads.erase).not.toHaveBeenCalled();
     });
 
     it('recovers an id-less private entry after a restart', async () => {
