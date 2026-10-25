@@ -423,7 +423,7 @@ Rules match the domain and its subdomains. Rules are never downloaded remotely.
 ## 7. File names
 
 - Default template `{title}`; variables: `{title}`, `{host}`, `{date}`, `{quality}`, `{lang}`.
-- Sanitization: NFC normalization, removal of characters invalid on Windows/macOS/Linux, Windows reserved names (`CON`, `NUL`…), whitespace collapsing, 180-character limit, `video` fallback.
+- Sanitization: NFC normalization, removal of characters invalid on Windows/macOS/Linux, Windows reserved names (`CON`, `NUL`…), whitespace collapsing, 180-character limit (code points, including the extension) and a 240-byte UTF-8 limit, whichever is stricter, `video` fallback.
 - Optional subfolder inside the downloads folder.
 
 ---

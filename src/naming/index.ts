@@ -1,6 +1,8 @@
 /** File name templates and sanitization (design §7). Pure functions, no browser APIs. */
 
 export const MAX_NAME_LENGTH = 180;
+/** UTF-8 cap, under the 255-byte limit of ext4/APFS to leave room for the browser's ` (1)` suffix. */
+export const MAX_NAME_BYTES = 240;
 export const FALLBACK_NAME = 'video';
 export const DEFAULT_TEMPLATE = '{title}';
 
@@ -20,12 +22,30 @@ export interface NameOptions {
 const INVALID_CHARS = /[<>:"/\\|?*\u0000-\u001f\u007f-\u009f]/g;
 // Format characters that render as nothing or reorder text: zero-width, bidi controls, BOM.
 const INVISIBLE_CHARS = /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
-const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])$/i;
+const RESERVED = /^(con|prn|aux|nul|conin\$|conout\$|clock\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
 const VARIABLE = /\{(\w+)\}/g;
+const VARIABLES: ReadonlySet<string> = new Set<TemplateVariable>([
+  'title',
+  'host',
+  'date',
+  'quality',
+  'lang',
+]);
+const encoder = new TextEncoder();
 
-function truncate(text: string, max: number): string {
-  const points = Array.from(text);
-  return points.length <= max ? text : points.slice(0, max).join('');
+/** Cuts at whole code points so the result fits `maxLength` characters and `maxBytes` of UTF-8. */
+function truncate(text: string, maxLength: number, maxBytes = MAX_NAME_BYTES): string {
+  let out = '';
+  let bytes = 0;
+  let count = 0;
+  for (const point of text) {
+    const size = encoder.encode(point).length;
+    if (count + 1 > maxLength || bytes + size > maxBytes) break;
+    out += point;
+    bytes += size;
+    count += 1;
+  }
+  return out;
 }
 
 function stripEdges(text: string): string {
@@ -43,9 +63,12 @@ function cleanSegment(raw: string): string {
 }
 
 /** Windows treats `CON.txt` like `CON`, so the check looks at the part before the first dot. */
+function isReserved(name: string): boolean {
+  return RESERVED.test(name.split('.')[0]?.trimEnd() ?? name);
+}
+
 function avoidReserved(name: string): string {
-  const stem = name.split('.')[0]?.trimEnd() ?? name;
-  return RESERVED.test(stem) ? `_${name}` : name;
+  return isReserved(name) ? `_${name}` : name;
 }
 
 function cleanExtension(extension: string | undefined): string {
@@ -64,9 +87,12 @@ export function sanitizeFileName(
   maxLength = MAX_NAME_LENGTH,
 ): string {
   const ext = cleanExtension(extension);
-  const budget = Math.max(1, maxLength - Array.from(ext).length);
-  let base = stripEdges(truncate(cleanSegment(name), budget));
-  if (base === '') base = FALLBACK_NAME;
+  const cleaned = cleanSegment(name) || FALLBACK_NAME;
+  // Reserve room for the `_` prefix up front so the limit holds after it is added.
+  const prefix = isReserved(cleaned) ? 1 : 0;
+  const budget = Math.max(1, maxLength - Array.from(ext).length - prefix);
+  const byteBudget = Math.max(1, MAX_NAME_BYTES - encoder.encode(ext).length - prefix);
+  const base = stripEdges(truncate(cleaned, budget, byteBudget)) || FALLBACK_NAME;
   return avoidReserved(base) + ext;
 }
 
@@ -75,9 +101,9 @@ export function sanitizeSubfolder(path: string | undefined): string {
   if (path === undefined) return '';
   return path
     .split(/[/\\]+/)
-    .map((segment) => cleanSegment(segment))
+    .map((segment) => stripEdges(truncate(cleanSegment(segment), MAX_NAME_LENGTH - 1)))
     .filter((segment) => segment !== '')
-    .map((segment) => avoidReserved(truncate(segment, MAX_NAME_LENGTH)))
+    .map((segment) => avoidReserved(segment))
     .join('/');
 }
 
@@ -93,7 +119,8 @@ export function formatDate(date: Date): string {
  */
 export function expandTemplate(template: string, values: TemplateValues): string {
   return template.replace(VARIABLE, (_match, key: string) => {
-    const value = (values as Record<string, string | undefined>)[key];
+    if (!VARIABLES.has(key)) return '';
+    const value = values[key as TemplateVariable];
     return value === undefined ? '' : cleanSegment(value);
   });
 }

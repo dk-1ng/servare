@@ -52,13 +52,29 @@ describe('sanitizeFileName', () => {
 
   it('does not split surrogate pairs when truncating', () => {
     const result = sanitizeFileName('🎬'.repeat(300));
-    expect(Array.from(result)).toHaveLength(180);
-    expect(result).toBe('🎬'.repeat(180));
+    expect(Array.from(result)).toHaveLength(60);
+    expect(new TextEncoder().encode(result).length).toBeLessThanOrEqual(240);
   });
 
   it('applies the fallback and reserved check before adding the extension', () => {
     expect(sanitizeFileName('', '.mkv')).toBe('video.mkv');
     expect(sanitizeFileName('con', 'mp4')).toBe('_con.mp4');
+  });
+
+  it('keeps the limit when the reserved prefix is added', () => {
+    const result = sanitizeFileName('con.' + 'a'.repeat(300), 'mp4');
+    expect(Array.from(result)).toHaveLength(180);
+    expect(result.startsWith('_con.')).toBe(true);
+  });
+
+  it('caps multi-byte names at 240 UTF-8 bytes', () => {
+    const result = sanitizeFileName('日本語'.repeat(100), 'mp4');
+    expect(new TextEncoder().encode(result).length).toBeLessThanOrEqual(240);
+    expect(result.endsWith('.mp4')).toBe(true);
+  });
+
+  it.each(['CONIN$', 'clock$'])('prefixes reserved device %s', (n) => {
+    expect(sanitizeFileName(n)).toBe(`_${n}`);
   });
 
   it('drops unsafe characters from the extension', () => {
@@ -82,6 +98,11 @@ describe('sanitizeSubfolder', () => {
     expect(sanitizeSubfolder('..')).toBe('');
   });
 
+  it('does not leave trailing spaces or dots after truncation', () => {
+    expect(sanitizeSubfolder('a'.repeat(178) + ' b')).toBe('a'.repeat(178));
+    expect(sanitizeSubfolder('a'.repeat(178) + '.b')).toBe('a'.repeat(178));
+  });
+
   it('avoids reserved segment names', () => {
     expect(sanitizeSubfolder('nul/x')).toBe('_nul/x');
   });
@@ -102,6 +123,10 @@ describe('expandTemplate', () => {
 
   it('expands unknown and missing variables to nothing', () => {
     expect(expandTemplate('{title}{nope}{lang}', { title: 'x' })).toBe('x');
+  });
+
+  it('ignores inherited property names', () => {
+    expect(expandTemplate('{constructor}{toString}{__proto__}x', {})).toBe('x');
   });
 
   it('cleans values so they cannot add path segments', () => {
