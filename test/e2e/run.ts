@@ -25,6 +25,7 @@ interface E2eApi {
   cancel(jobId: string): Promise<null>;
   openPopup(tabId: number): Promise<void>;
   closeTabs(prefix: string): Promise<void>;
+  navigate(tabId: number, url: string): Promise<void>;
   rules(): Promise<number[]>;
   tabId(prefix: string): Promise<number | undefined>;
   failures(): Promise<{ jobId: string; error: { kind: string; message: string } }[]>;
@@ -522,13 +523,76 @@ async function runTarget(target: Target, origin: string): Promise<void> {
     );
     log.push('  ok   two tokenized URLs for the same media yield one item (latest token)');
 
-    // Navigating the top frame empties the list.
-    await listPage.goto(`${origin}/pages/index.html`);
+    // A navigation that never replaces the page (204, download link) keeps the list.
+    const navigateFrom = (target: Page, script: string): Promise<void> =>
+      // The page may go away while the script runs: that is the point.
+      target.evaluate(script).then(
+        () => undefined,
+        () => undefined,
+      );
+    await call('navigate', listTab, `${origin}/status/204`);
+    await sleep(1500);
+    assert((await entriesOf(listTab)).length === 1, 'a 204 navigation cleared the list');
+    const attachment = 'servare-e2e-attachment.bin';
+    const beforeLink = new Set(await readdir(downloads));
+    await navigateFrom(
+      listPage,
+      `const a = document.createElement('a');
+       a.href = '/synthetic/2mb.bin?attachment=${attachment}';
+       document.body.append(a);
+       a.click();`,
+    );
+    await until('attachment downloaded by the browser', 30000, async () =>
+      (await readdir(downloads)).some(
+        (f) => !beforeLink.has(f) && f.startsWith('servare-e2e-attachment'),
+      )
+        ? true
+        : undefined,
+    );
+    assert((await entriesOf(listTab)).length === 1, 'a download link cleared the list');
+    log.push('  ok   a 204 and a download link left the list alone');
+
+    // Navigating the top frame empties the list, and a response the old page asked for just
+    // before leaving does not bring it back.
+    await navigateFrom(
+      listPage,
+      "void fetch('/synthetic/2mb.bin?as=video&delay=1000&late=1'); location.href = '/pages/index.html';",
+    );
     await until('list emptied by navigation', 30000, async () =>
       (await entriesOf(listTab)).length === 0 ? true : undefined,
     );
-    assert(!(String(listTab) in (await call('tabList'))), 'the tab entry survived the navigation');
-    log.push('  ok   navigating the tab emptied its list');
+    await sleep(2500);
+    assert(
+      !(String(listTab) in (await call('tabList'))),
+      `the tab entry survived the navigation: ${JSON.stringify(await entriesOf(listTab))}`,
+    );
+    // Firefox may cancel the old page's fetch before sending it; Chromium lets it complete.
+    const served = ((await (await fetch(`${origin}/__requests`)).json()) as { url: string }[]).some(
+      (r) => r.url.includes('late=1'),
+    );
+    log.push(
+      `  ok   navigating the tab emptied its list; late old-page response ${served ? 'served and ignored' : 'cancelled by the browser'}`,
+    );
+
+    // A media file opened in the tab is listed, whatever the order of its response and commit.
+    const topMedia = `${origin}/synthetic/2mb.bin?as=video&top=1`;
+    // Typed, not from the helper: a navigation the extension starts counts as its own request.
+    // Firefox never fires `load` for the synthetic bytes, so only the start is awaited.
+    await listPage
+      .goto(topMedia, { waitUntil: 'domcontentloaded', timeout: 10000 })
+      .catch(() => undefined);
+    await until('media file opened in the tab is listed', 30000, async () => {
+      const entries = await entriesOf(listTab);
+      return entries.length === 1 && entries[0]?.url === topMedia ? true : undefined;
+    }).catch(async (error: unknown) => {
+      throw new Error(`${String(error)}; list: ${JSON.stringify(await call('tabList'))}`);
+    });
+    await sleep(1500);
+    assert(
+      (await entriesOf(listTab)).length === 1,
+      `the opened media file is not the only item: ${JSON.stringify(await entriesOf(listTab))}`,
+    );
+    log.push('  ok   a media file opened in the tab stays listed after its commit');
 
     // Closing the tab removes the entry.
     const closeTabPage = await browser.newPage();

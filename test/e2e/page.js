@@ -61,6 +61,10 @@ globalThis.e2e = {
     const tabs = await api.tabs.query({});
     await api.tabs.remove(tabs.filter((t) => (t.url ?? '').startsWith(prefix)).map((t) => t.id));
   },
+  /** Navigates a tab's top frame (does not depend on the page object of the test driver). */
+  async navigate(tabId, url) {
+    await api.tabs.update(tabId, { url });
+  },
   /** ID of the first tab whose URL starts with `prefix`. */
   async tabId(prefix) {
     const tabs = await api.tabs.query({});

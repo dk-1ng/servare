@@ -92,6 +92,17 @@ describe('synthetic bytes', () => {
 });
 
 describe('fault injection and access control', () => {
+  it('delays, labels and attaches synthetic files on request', async () => {
+    const started = Date.now();
+    const res = await get('/synthetic/10?delay=200&as=video&attachment=clip.bin');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(150);
+    expect(res.headers.get('content-type')).toBe('video/mp4');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="clip.bin"');
+    const plain = await get('/synthetic/10?attachment=bad"name');
+    expect(plain.headers.get('content-type')).toBe('application/octet-stream');
+    expect(plain.headers.get('content-disposition')).toBeNull();
+  });
+
   it('answers requested status codes', async () => {
     expect((await get('/status/503')).status).toBe(503);
     expect((await get('/status/404')).status).toBe(404);
