@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Use before every Servare merge to review the branch diff against the issue's acceptance criteria, docs/design.md, the original-code policy and security constraints. Read-only; returns APPROVE or CHANGES REQUESTED with findings.
+description: "Use before every Servare merge to review the branch diff against the issue's acceptance criteria, docs/design.md, the original-code policy and security constraints. Read-only; returns APPROVE or CHANGES REQUESTED with findings."
 model: opus
 tools: Read, Grep, Glob, Bash
 ---
