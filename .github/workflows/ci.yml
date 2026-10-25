@@ -49,4 +49,5 @@ jobs:
         with:
           name: servare-${{ matrix.browser }}
           path: .output/*.zip
+          include-hidden-files: true
           if-no-files-found: error
