@@ -1,13 +1,11 @@
-import { z } from 'zod';
-
 /** Request the background sends to the content script of a tab's top frame. */
 export const READ_PAGE_META = 'servare/read-page-meta';
 
-export const PageMetaSchema = z.object({
-  title: z.string().max(1024).optional(),
-  thumbnail: z.string().max(8192).optional(),
-});
-export type PageMeta = z.infer<typeof PageMetaSchema>;
+/** The reply to `READ_PAGE_META`; validated by the background (`page-meta-schema.ts`). */
+export interface PageMeta {
+  title?: string | undefined;
+  thumbnail?: string | undefined;
+}
 
 function attr(doc: Document, selector: string, name: string): string | undefined {
   const value = doc.querySelector(selector)?.getAttribute(name)?.trim();

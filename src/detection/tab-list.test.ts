@@ -127,6 +127,25 @@ describe('TabMediaList', () => {
     expect(await new TabMediaList({ store }).items(1)).toHaveLength(1);
   });
 
+  it('ignores a detection that began before a clear', async () => {
+    const { list } = setup();
+    const generation = list.generation(1);
+    await list.clear(1);
+    await list.add(media(), page, false, generation);
+    expect(await list.items(1)).toEqual([]);
+    await list.add(media(), page, false);
+    expect(await list.items(1)).toHaveLength(1);
+  });
+
+  it('clamps long titles and drops oversized URLs without hiding other items', async () => {
+    const { list } = setup();
+    await list.add(media(), { pageUrl: page.pageUrl, title: 'x'.repeat(5000) }, false);
+    await list.add(media({ url: `https://c.com/v.mp4?x=${'a'.repeat(9000)}` }), page, false);
+    const items = await list.items(1);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.title).toHaveLength(1024);
+  });
+
   it('finds an item by ID', async () => {
     const { list } = setup();
     await list.add(media(), page, false);

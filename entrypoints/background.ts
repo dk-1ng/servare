@@ -5,7 +5,8 @@ import { createWorkerHost } from '@/src/platform/worker-host';
 import { platform } from '@/src/platform';
 import { HeaderCache, type HeaderEntry } from '@/src/detection/header-cache';
 import { createObserver, type DetectedMedia } from '@/src/detection/observer';
-import { PageMetaSchema, READ_PAGE_META, type PageMeta } from '@/src/detection/page-meta';
+import { READ_PAGE_META, type PageMeta } from '@/src/detection/page-meta';
+import { PageMetaSchema } from '@/src/detection/page-meta-schema';
 import { TabMediaList, type ListState } from '@/src/detection/tab-list';
 import { registerObserver } from '@/src/detection/register';
 import { createStore, localArea, sessionArea } from '@/src/state';
@@ -93,6 +94,7 @@ async function readPageMeta(tabId: number): Promise<PageMeta> {
 }
 
 async function recordDetection(media: DetectedMedia): Promise<void> {
+  const generation = tabList.generation(media.tabId);
   const tab = await browser.tabs.get(media.tabId);
   // The MediaItem contract only carries http(s) page URLs.
   if (!tab.url || !/^https?:/.test(tab.url)) return;
@@ -105,6 +107,7 @@ async function recordDetection(media: DetectedMedia): Promise<void> {
       thumbnail: meta.thumbnail,
     },
     tab.incognito,
+    generation,
   );
   await publish(media.tabId);
 }

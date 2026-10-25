@@ -1,4 +1,4 @@
-import type { MediaItem } from '@/src/messaging';
+import { MediaItemSchema, type MediaItem } from '@/src/messaging';
 import type { Store } from '@/src/state';
 import type { DetectedKind } from './classify';
 import type { DetectedMedia } from './observer';
@@ -7,6 +7,8 @@ import { normalizeUrl } from './normalize';
 /** With a manifest in the tab, direct files smaller than this are probably fragments or ads. */
 export const SMALL_DIRECT_SIZE = 10 * 1024 * 1024;
 const MAX_ENTRIES_PER_TAB = 100;
+const MAX_URL_LENGTH = 8192;
+const MAX_TITLE_LENGTH = 1024;
 
 /** What the tab says about itself, from `tabs.get` and the content script. */
 export interface PageInfo {
@@ -78,7 +80,7 @@ function toItem(tabId: number, state: TabState, entry: Entry): MediaItem {
     kind: entry.kind,
     url: entry.url,
     pageUrl: page.pageUrl,
-    title: page.title || nameFromUrl(entry.url) || page.pageUrl,
+    title: (page.title || nameFromUrl(entry.url) || page.pageUrl).slice(0, MAX_TITLE_LENGTH),
     ...(page.thumbnail !== undefined && { thumbnail: page.thumbnail }),
     // Unknown for a direct file until a probe reads it; manifests fill it in (#18).
     duration: 0,
@@ -97,13 +99,30 @@ function toItem(tabId: number, state: TabState, entry: Entry): MediaItem {
 export class TabMediaList {
   private readonly privateTabs = new Map<number, TabState>();
   private readonly store: Store<ListState>;
+  /** Bumped by `clear`, so a detection that began before it cannot bring the old list back. */
+  private readonly generations = new Map<number, number>();
 
   constructor(options: TabMediaListOptions) {
     this.store = options.store;
   }
 
-  /** Adds a detection, merging it into an existing entry with the same normalized URL. */
-  async add(media: DetectedMedia, page: PageInfo, incognito: boolean): Promise<void> {
+  /** Read synchronously when a detection starts, before any `await`, and pass it to `add`. */
+  generation(tabId: number): number {
+    return this.generations.get(tabId) ?? 0;
+  }
+
+  /**
+   * Adds a detection, merging it into an existing entry with the same normalized URL. Does
+   * nothing if the tab was cleared since `generation` was read, or if a URL is oversized.
+   */
+  async add(
+    media: DetectedMedia,
+    page: PageInfo,
+    incognito: boolean,
+    generation = this.generation(media.tabId),
+  ): Promise<void> {
+    if (generation !== this.generation(media.tabId)) return;
+    if (media.url.length > MAX_URL_LENGTH || page.pageUrl.length > MAX_URL_LENGTH) return;
     const key = normalizeUrl(media.url);
     const apply = (state: TabState | undefined): TabState => {
       const entries = state?.entries ?? [];
@@ -140,14 +159,17 @@ export class TabMediaList {
       this.privateTabs.set(media.tabId, apply(this.privateTabs.get(media.tabId)));
       return;
     }
-    await this.store.update((all) => ({
-      ...all,
-      [String(media.tabId)]: apply(all[String(media.tabId)]),
-    }));
+    await this.store.update((all) =>
+      // Re-checked inside the serialized write: a `clear` may have run while this one waited.
+      generation !== this.generation(media.tabId)
+        ? all
+        : { ...all, [String(media.tabId)]: apply(all[String(media.tabId)]) },
+    );
   }
 
   /** Drops a tab's list (navigation or close). Returns whether anything was dropped. */
   async clear(tabId: number): Promise<boolean> {
+    this.generations.set(tabId, this.generation(tabId) + 1);
     const hadPrivate = this.privateTabs.delete(tabId);
     let hadStored = false;
     await this.store.update((all) => {
@@ -162,7 +184,10 @@ export class TabMediaList {
   async items(tabId: number): Promise<MediaItem[]> {
     const state = this.privateTabs.get(tabId) ?? (await this.store.get())[String(tabId)];
     if (!state) return [];
-    return visibleEntries(state.entries).map((entry) => toItem(tabId, state, entry));
+    // One malformed entry must not hide the rest: the whole array is validated on the wire.
+    return visibleEntries(state.entries)
+      .map((entry) => toItem(tabId, state, entry))
+      .filter((item) => MediaItemSchema.safeParse(item).success);
   }
 
   /** Looks an item up for enqueueing, hidden or not. */
