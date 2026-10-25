@@ -16,19 +16,47 @@ Read `docs/design.md` before any change; it is the source of truth for behavior.
 ## Tracking
 
 Everything lives on GitHub `dk-1ng/servare`: issues, milestones `M0`…`M5` and the "Servare" project.
-Labels: `type: *`, `area: *`, `browser: *`, `status: ready | in progress | blocked | triage`.
+Labels: `type: *`, `area: *`, `browser: *`, `complexity: high`, `status: ready | in progress | blocked | triage`.
+
+## Model routing
+
+The main session is expected to run on **Sonnet** (`/model sonnet`). It orchestrates, implements small issues inline and delegates the rest to the agents in `.claude/agents/`:
+
+| Agent           | Model                                                | Use for                                                                                                            |
+| --------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `architect`     | Opus                                                 | `type: spike`, planning `complexity: high` issues, changes to `docs/design.md`, bugs that survived one fix attempt |
+| `implementer`   | Sonnet (pass `model: "opus"` for `complexity: high`) | Implementing an issue too large to do inline                                                                       |
+| `test-engineer` | Sonnet                                               | Fixtures, test server, E2E suites                                                                                  |
+| `reviewer`      | Opus                                                 | Reviewing every branch before merge                                                                                |
+| `translator`    | Sonnet                                               | Syncing `docs/readme/` after `README.md` changes                                                                   |
+| `tracker`       | Haiku                                                | Labels, project cards, status comments                                                                             |
+
+Subagents start without this conversation's context, so delegate only when the task is large or needs a different model; give them the issue number, branch and any decision already made.
+
+If the main session is running on Opus and the next issue is not `complexity: high`, tell the user **before starting** and suggest `/model sonnet`. If it runs on Sonnet and the issue is a spike or `complexity: high`, delegate to `architect`/`implementer` on Opus instead of asking the user to switch.
 
 ### When asked to "continue"
 
-1. Resume the issue labeled `status: in progress`, if any (read its comments to see where it stopped):
+1. Find the issue: resume the one labeled `status: in progress` (read its comments to see where it stopped):
    `gh issue list -R dk-1ng/servare --state open --label "status: in progress"`
-2. Otherwise take the lowest-numbered open issue in the earliest open milestone, skipping `status: blocked`:
+   otherwise take the lowest-numbered open issue in the earliest open milestone, skipping `status: blocked`:
    `gh issue list -R dk-1ng/servare --state open --milestone "<milestone>" --json number,title,labels`
-3. Swap the label to `status: in progress`, move the card to "In Progress" and create the branch `<type>/<n>-short-description`.
-4. Implement following the issue and the design. Run lint, typecheck, tests and the verification listed in the acceptance criteria.
-5. Conventional Commits. Open a PR with `Closes #N`, wait for CI, squash merge.
-6. If the session ends mid-task, comment on the issue with the exact state (done, missing, files touched, next steps).
-7. Decisions that change the design → update `docs/design.md` in the same PR.
+2. Check the model routing rule above; warn the user if needed.
+3. `tracker`: mark the issue in progress. Main session: create the branch `<type>/<n>-short-description` from an up-to-date `main`.
+4. Route the work:
+   - `type: spike` → `architect`;
+   - `complexity: high` → `architect` plans, then `implementer` with `model: "opus"`;
+   - test infrastructure → `test-engineer`;
+   - otherwise implement inline, or `implementer` if the issue spans many files.
+5. Verify: lint, typecheck, tests, build and the acceptance criteria.
+6. `reviewer` on the branch. On `CHANGES REQUESTED`, fix (or send back to the implementer) and review again.
+7. If `README.md` changed, `translator` syncs `docs/readme/`.
+8. Open the PR (`Closes #N`, PR template filled in), wait for CI, squash merge, update local `main`.
+9. `tracker`: mark the issue done.
+10. Tell the user the issue is finished and that this is a good moment to run `/clear` and say "continue" again (one issue per session keeps context small).
+11. If the session must stop mid-task, `tracker` posts a comment with the exact state (done, missing, files touched, next steps).
+
+Decisions that change the design → update `docs/design.md` in the same PR.
 
 ### Moving a project card
 
