@@ -199,7 +199,7 @@ Message details live in `docs/ui-contract.md` (issue #12).
 ### 3.1 Network observation
 
 1. `webRequest.onSendHeaders` stores the headers sent per request (TTL cache). Chromium needs `extraHeaders` to see `Cookie`/`Referer`.
-2. `webRequest.onResponseStarted` evaluates the response. Discarded: non-2xx status, non-HTTP schemes, the extension's own requests, requests without a tab, stream fragments (segment `.ts`, `.m4s`, `.aac`) and domains with detection disabled.
+2. `webRequest.onResponseStarted` evaluates the response. Discarded: non-2xx status, non-HTTP schemes, the extension's own requests (recognized by `initiator`/`originUrl` with the extension's origin, not by `tabId`: on Firefox they carry the host tab's ID, see §4.1.1), requests without a tab, stream fragments (segment `.ts`, `.m4s`, `.aac`) and domains with detection disabled.
 3. Classification order: **HLS → DASH → direct file**.
 
 ### 3.2 Direct files
@@ -241,8 +241,59 @@ There is no attempt to obtain licenses, CDM keys or equivalents.
 ### 4.1 Preparation
 
 1. Check `protected`, available space (`navigator.storage.estimate()`) and create the job.
-2. **Header compatibility:** many servers require the same `Referer`/`Origin`/`Cookie` the player sent (hotlink protection). Servare creates session `declarativeNetRequest` rules that reapply those values **only to the extension's own requests** (`tabIds: [-1]` and/or `initiatorDomains`), never to page traffic. Rules are removed when the job ends (`finally`), and orphaned rules are cleared on startup.
+2. **Header compatibility:** many servers require the same `Referer`/`Origin`/`Cookie` the player sent (hotlink protection). Servare creates session `declarativeNetRequest` rules that reapply those values **only to the extension's own requests**, never to page traffic. Rules are removed when the job ends (`finally`), and orphaned rules are cleared whenever the background starts. Details in §4.1.1.
 3. Send the job to the worker.
+
+#### 4.1.1 Header replay rules (spike #7)
+
+**Decision:**
+
+- **Scope.** Every rule's condition is `initiatorDomains: [<own extension host>]` plus `requestDomains: [<host being fetched>]`. The extension host is read at runtime from `runtime.getURL('/')` (the Chromium extension ID, or the per-install Firefox UUID). No `tabIds`: on Firefox the download worker lives in the host **tab** (§2.3), so its requests carry that tab's ID, not `-1`, and `tabIds: [-1]` silently does not match them. `initiatorDomains` matches the extension's own requests on both browsers and never matches page traffic, whatever the page's tab or origin.
+- **One rule per (job, host).** A captured `Cookie` belongs to one host and must never be sent to another one (a segment CDN, a key server). The background builds each host's header set from what the player sent to that host (the §3.1 `onSendHeaders` cache). For hosts known at preparation time (manifest, segment and key hosts after parsing), it adds the rules before starting the worker. A host first seen later (for example a new host in a live playlist) makes the worker ask the background for a rule before its first request there. If no player request to that host was captured, only `Referer` and `Origin` are replayed.
+- **Headers replayed:**
+  - `Referer`: `set` to the player's value. If the player sent none, `remove`.
+  - `Origin`: `set` when the player sent one, `remove` otherwise. Extension `GET`s carry no `Origin` on either browser, but a `POST` carries `chrome-extension://…`/`moz-extension://…`, which a server checking `Origin` rejects (other methods are expected to behave the same, per the Fetch standard). One rule shape covers both cases.
+  - `Cookie`: `set` to the player's value, otherwise `remove`. The worker fetches with `credentials: 'omit'`, so the jar is never used: no cookies the player did not send, no `Set-Cookie` written into the regular jar from private-window jobs, and partitioned cookies (dFPI / CHIPS) work too, because the value comes from the player's request and not from a jar lookup. `credentials: 'omit'` plus a DNR `Cookie` `set` was verified to reach the server on both browsers.
+  - Not replayed for now: `User-Agent` (same browser), `Sec-Fetch-*`, `Authorization`. The table shows they can be set, so a per-domain rule can add one later if a real site needs it, with evidence.
+- **Conflicts.** Two running jobs that need different header sets for the same host would match each other's rules: DNR cannot tell two requests from the same extension apart without changing their URL. The background refcounts rules by (host, header set). A job whose header set conflicts with a running job's set for the same host waits in the queue until that job finishes. Identical sets share one rule.
+- **Lifecycle.** Rule IDs come from a range reserved for header replay and are stored with the job. Session rules survive background suspension and are dropped on browser shutdown and on extension update. So each time the background starts, it reads `getSessionRules()` and removes every rule in the range that does not belong to a `queued`/`running` job in the store. A resumed job (§4.10) recreates its rules before it restarts the worker. Cleanup runs in `finally` on success, failure and cancellation.
+- **Captured values are sensitive.** Cookie values live in job state only as long as the job needs them. Jobs from private windows keep them in `storage.session`, never in `storage.local`.
+- **Detection side effect (§3.1):** the extension's own requests appear in `webRequest` with the DNR-modified headers already applied. On Firefox they also carry the host tab's `tabId`. The observer must recognize them by `initiator` (Chromium) or `originUrl`/`documentUrl` (Firefox) starting with the extension's own origin, not by `tabId === -1`.
+
+**Compatibility table** (Chromium 156 headless, Firefox 158 headless, 2026-10-25). A throwaway MV3 probe used the production layout: a module worker in the worker host (offscreen document on Chromium, inactive extension tab on Firefox). For each case it added a session `modifyHeaders` rule and fetched an echo server that returned the request headers it received. Every `updateSessionRules` call was accepted, and every operation below reached the server as written on **both** browsers:
+
+| Header                                                                                        | `set` | `remove`                  | `append`    | Notes                                                                |
+| --------------------------------------------------------------------------------------------- | ----- | ------------------------- | ----------- | -------------------------------------------------------------------- |
+| `Referer`                                                                                     | yes   | yes                       | not tested  | Extension requests send no `Referer` by default                      |
+| `Origin`                                                                                      | yes   | yes                       | not tested  | Absent on extension `GET`; extension origin on `POST`, both browsers |
+| `Cookie`                                                                                      | yes   | yes                       | yes (`; v`) | `set` replaces jar cookies; works with `credentials: 'omit'`         |
+| `User-Agent`, `Accept`, `Accept-Language`, `Authorization`, `Range`, `Priority`, custom `X-*` | yes   | not tested                | not tested  | `Range` also works when passed to `fetch` directly                   |
+| `Sec-Fetch-Site`/`-Mode`/`-Dest`                                                              | yes   | yes (`-Site` only tested) | not tested  | Extension defaults differ: Chromium `none`, Firefox `same-origin`    |
+| `Accept-Encoding`, `Host`                                                                     | yes   | not tested                | not tested  | Both are honored. Never touch them                                   |
+
+Rule scope, measured as "did the request get the rule's header?". Page traffic was a normal web tab on another origin doing `fetch` (credentialed, CORS) and `<img>` to the same URLs while the rules were active:
+
+| Condition                           | Chromium worker (offscreen) | Firefox worker (host tab) | Background (SW / event page) | Page `fetch` and `<img>`    |
+| ----------------------------------- | --------------------------- | ------------------------- | ---------------------------- | --------------------------- |
+| none (control)                      | yes                         | yes                       | yes                          | **yes (leak)**              |
+| `tabIds: [-1]`                      | yes                         | **no**                    | yes                          | no                          |
+| `initiatorDomains: [own host]`      | yes                         | yes                       | yes                          | no                          |
+| `tabIds: [-1]` + `initiatorDomains` | yes                         | **no**                    | yes                          | no                          |
+| `tabIds: [<host tab>]` (Firefox)    | —                           | yes                       | no                           | no                          |
+| `excludedInitiatorDomains: [page]`  | yes                         | yes                       | yes                          | no (but only for that page) |
+
+`webRequest` view of the same requests: Chromium worker → `tabId -1`, `initiator: chrome-extension://<id>`. Firefox worker → `tabId <host tab>`, `originUrl`/`documentUrl: moz-extension://<uuid>/<worker script>`. Firefox event page → `tabId -1`.
+
+Acceptance run against the test server's `/guarded/…` (same-origin `Referer` and the session cookie required). Rule: `requestDomains` + the extension's scope, `Referer` and `Cookie` set, `Origin` removed. On both browsers the worker got `403 referer required` without the rule, then `200` with all 1 MiB, and `206` for a `Range` request with the rule. While the rule was active, the page tab's `fetch` and `<img>` for the same URL still got `403`, and the server logged the page's own `Referer`. `getSessionRules()` listed the leftover rule, and removing it left zero rules.
+
+**Rejected:**
+
+- **`tabIds: [-1]` as the scope.** It works on Chromium but misses the Firefox worker (host tab). Adding the host tab ID instead would tie the rules to a tab that can be closed and reopened mid-job.
+- **Headers on `fetch` itself.** `Cookie`, `Origin` and `Referer` (cross-origin) are forbidden request headers in the Fetch standard, so a page or worker cannot set them.
+- **`credentials: 'include'` (jar cookies).** Both browsers send the regular jar's cookies for the target host. That works only when the player's cookies are unpartitioned and from a regular window, sends cookies the player did not send, and lets server `Set-Cookie` responses write into the jar.
+- **One rule per host shared by every job without conflict checks.** Two pages with different sessions on the same CDN would get each other's cookies.
+
+**Not verified by the spike:** headed browsers and packaged installs; rule behavior across a real Chromium service-worker stop and a Firefox event-page suspension mid-job (documented as kept, see above); interaction with another extension's `modifyHeaders` rules on the same header (Chromium gives the most recently installed extension precedence); Firefox versions between 140 and 158; private-window jobs end to end.
 
 ### 4.2 Networking
 
