@@ -193,12 +193,13 @@ const observer = createObserver({
 
 const delivery = new Delivery(
   browser.downloads,
-  localArea,
+  { local: localArea, session: sessionArea },
   async (jobId, outcome) => {
     await requestOverRuntime(browser.runtime, 'delivery/release', { jobId, outcome });
   },
   // Runs after every release, success or not, once it is no longer in flight.
   () => closeHostWhenIdle(),
+  { incognitoOption: platform.downloadsIncognitoOption },
 );
 
 /**
@@ -389,8 +390,9 @@ const handlers: Partial<Handlers> = {
   'delivery/deliver': async (request) => {
     // On failure the host cleans up and reports `worker/failed`, which settles the job; closing
     // the host here could cut that cleanup short.
-    const downloadId = await delivery.deliver(request);
     const job = (await runningStore.get())[request.jobId];
+    // A job that is unknown (or persisted before `private` existed) is treated as private.
+    const downloadId = await delivery.deliver({ ...request, private: job?.private ?? true });
     if (job) {
       emitJob(request.jobId, job, {
         status: 'done',

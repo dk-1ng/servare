@@ -382,6 +382,7 @@ WebVTT, SRT and TTML from HLS/DASH: embedded in the container or saved as a sepa
 - Positional writes to OPFS with `createSyncAccessHandle` (the file is never held in memory; `unlimitedStorage`).
 - At the end: `File` → blob URL → `downloads.download` (`conflictAction: 'uniquify'`, optional "save as"). On Chromium the name is enforced via `downloads.onDeterminingFilename`.
 - After completion: the temporary file is removed and the blob URL revoked.
+- **Private windows (#63).** The pending delivery of a private job (or of one whose tab is unknown) is listed in `storage.session`, never `storage.local`, so no file name or blob URL reaches disk; if the browser closes mid-download, OPFS orphan cleanup is the recovery. On Firefox `downloads.download` also gets `incognito: true`, so the item stays out of the persisted downloads list. Chromium rejects that option and is not given it (`platform.downloadsIncognitoOption`); there the item's incognito state follows the profile that makes the call, which is not verified for a spanning background (open question, to be checked in a real browser).
 
 ### 4.10 Queue, pause and resume
 

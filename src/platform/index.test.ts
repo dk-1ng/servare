@@ -7,6 +7,7 @@ describe('resolvePlatform', () => {
       name: 'firefox',
       needsOffscreenDocument: false,
       needsExtraHeaders: false,
+      downloadsIncognitoOption: true,
     });
   });
 
@@ -16,6 +17,7 @@ describe('resolvePlatform', () => {
         name: 'chrome',
         needsOffscreenDocument: true,
         needsExtraHeaders: true,
+        downloadsIncognitoOption: false,
       });
     }
   });

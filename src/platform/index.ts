@@ -8,6 +8,8 @@ export interface Platform {
   needsOffscreenDocument: boolean;
   /** Chromium hides Cookie/Referer from webRequest unless `extraHeaders` is requested. */
   needsExtraHeaders: boolean;
+  /** `downloads.download` accepts `incognito` on Firefox; Chromium rejects the unknown option. */
+  downloadsIncognitoOption: boolean;
 }
 
 export function resolvePlatform(browserName: string): Platform {
@@ -16,6 +18,7 @@ export function resolvePlatform(browserName: string): Platform {
     name: isFirefox ? 'firefox' : 'chrome',
     needsOffscreenDocument: !isFirefox,
     needsExtraHeaders: !isFirefox,
+    downloadsIncognitoOption: isFirefox,
   };
 }
 

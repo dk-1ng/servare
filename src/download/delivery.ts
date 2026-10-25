@@ -8,6 +8,8 @@ export interface DownloadsApiLike {
     filename: string;
     conflictAction: 'uniquify';
     saveAs: boolean;
+    /** Only sent where `DeliveryOptions.incognitoOption` is set: Chromium rejects it. */
+    incognito?: boolean;
   }): Promise<number>;
   search(query: { id?: number; url?: string }): Promise<{ id: number; state?: string }[]>;
   /** Fires with the id even if the context that called `download()` was suspended meanwhile. */
@@ -38,6 +40,23 @@ export interface DeliveryRequest {
   blobUrl: string;
   filename: string;
   saveAs: boolean;
+  /**
+   * The job came from a private window, or its tab is unknown. Its pending entry is kept in
+   * `storage.session` only and, where supported, the download itself is made incognito.
+   */
+  private?: boolean;
+}
+
+export interface DeliveryAreas {
+  /** Persisted: holds the pending deliveries of regular jobs. */
+  local: StorageAreaLike;
+  /** Cleared when the browser closes: the only place a private job's entry may live. */
+  session: StorageAreaLike;
+}
+
+export interface DeliveryOptions {
+  /** Firefox accepts `incognito` in `downloads.download`; Chromium rejects the unknown option. */
+  incognitoOption?: boolean;
 }
 
 /** How long an id-less entry may wait (e.g. an open save-as dialog) before it is given up on. */
@@ -60,7 +79,9 @@ type Pending = z.infer<typeof PendingSchema>[number];
 /**
  * Background side of §4.9. The blob URL lives in the worker host, so it must stay valid
  * until `downloads.onChanged` reports the end of the download. The background can be
- * suspended in between, hence the pending list lives in storage, not in memory.
+ * suspended in between, hence the pending list lives in storage, not in memory. Private jobs
+ * are listed in `storage.session` instead of `storage.local`, so no file name or URL of a
+ * private download is ever written to disk (design principle 4).
  *
  * If `downloads.download` rejects (e.g. the user cancels Firefox's save-as dialog), `deliver`
  * throws and the caller owns releasing the blob URL and the OPFS file.
@@ -69,25 +90,42 @@ type Pending = z.infer<typeof PendingSchema>[number];
  * `cleanupOrphans` at startup is the recovery path for the OPFS file.
  */
 export class Delivery {
-  private readonly store;
+  private readonly localStore;
+  private readonly sessionStore;
+  private readonly stores;
   /** Blob URLs this context is still delivering; `recover` must not touch them. */
   private readonly inflight = new Set<string>();
   private releasing = 0;
 
   constructor(
     private readonly downloads: DownloadsApiLike,
-    area: StorageAreaLike,
+    areas: DeliveryAreas,
     private readonly release: (jobId: string, outcome: DeliveryOutcome) => Promise<void>,
     /** Called after every release, once it no longer counts as in flight (success or not). */
     private readonly onReleased: () => Promise<void> = async () => {},
+    private readonly options: DeliveryOptions = {},
   ) {
-    this.store = createStore({
-      area,
-      key: 'delivery.pending',
-      schema: PendingSchema,
-      version: 1,
-      defaults: (): Pending[] => [],
-    });
+    const open = (area: StorageAreaLike) =>
+      createStore({
+        area,
+        key: 'delivery.pending',
+        schema: PendingSchema,
+        version: 1,
+        defaults: (): Pending[] => [],
+      });
+    this.localStore = open(areas.local);
+    this.sessionStore = open(areas.session);
+    this.stores = [this.localStore, this.sessionStore];
+  }
+
+  /** Applies `fn` to the pending list of each area. */
+  private async updateAll(fn: (list: Pending[]) => Pending[]): Promise<void> {
+    for (const store of this.stores) await store.update(fn);
+  }
+
+  /** Every pending entry, private or not. */
+  private async getAll(): Promise<Pending[]> {
+    return (await Promise.all(this.stores.map((store) => store.get()))).flat();
   }
 
   /** Register listeners synchronously at startup so a wake-up event is not missed. */
@@ -104,23 +142,18 @@ export class Delivery {
       }
     });
     this.downloads.onCreated?.addListener((item) => {
-      this.store
-        .update((list) =>
-          list.map((e) =>
-            e.blobUrl === item.url && e.downloadId === undefined
-              ? { ...e, downloadId: item.id }
-              : e,
-          ),
-        )
-        .catch((error: unknown) => {
-          console.error('[servare] delivery id adoption failed', error);
-        });
+      this.updateAll((list) =>
+        list.map((e) =>
+          e.blobUrl === item.url && e.downloadId === undefined ? { ...e, downloadId: item.id } : e,
+        ),
+      ).catch((error: unknown) => {
+        console.error('[servare] delivery id adoption failed', error);
+      });
     });
     this.downloads.onDeterminingFilename?.addListener((item, suggest) => {
       // Fires for every download in the browser: always answer, or Chromium waits forever.
       // The id may not be recorded yet, so match on the blob URL, which is stored first.
-      this.store
-        .get()
+      this.getAll()
         .then((list) => {
           const entry = list.find((e) => e.blobUrl === item.url);
           if (entry) suggest({ filename: entry.filename, conflictAction: 'uniquify' });
@@ -136,12 +169,11 @@ export class Delivery {
 
   async deliver(request: DeliveryRequest): Promise<number> {
     const { jobId, blobUrl, filename } = request;
+    const isPrivate = request.private ?? false;
+    const store = isPrivate ? this.sessionStore : this.localStore;
     this.inflight.add(blobUrl);
     try {
-      await this.store.update((list) => [
-        ...list,
-        { jobId, filename, blobUrl, createdAt: Date.now() },
-      ]);
+      await store.update((list) => [...list, { jobId, filename, blobUrl, createdAt: Date.now() }]);
       let downloadId: number;
       try {
         downloadId = await this.downloads.download({
@@ -149,15 +181,16 @@ export class Delivery {
           filename,
           conflictAction: 'uniquify',
           saveAs: request.saveAs,
+          ...(isPrivate && this.options.incognitoOption ? { incognito: true } : {}),
         });
       } catch (error) {
-        await this.store.update((list) => list.filter((e) => e.blobUrl !== blobUrl));
+        await store.update((list) => list.filter((e) => e.blobUrl !== blobUrl));
         throw error;
       }
       // The download already happened: a failure below must not turn into a failed delivery.
       // `onCreated` and `recover` fill in an id that could not be saved here.
       try {
-        await this.store.update((list) =>
+        await store.update((list) =>
           list.map((e) => (e.blobUrl === blobUrl ? { ...e, downloadId } : e)),
         );
         await this.catchUp(downloadId);
@@ -189,14 +222,14 @@ export class Delivery {
    * older than `STALE_AFTER_MS`.
    */
   async recover(): Promise<void> {
-    const orphans = (await this.store.get()).filter(
+    const orphans = (await this.getAll()).filter(
       (e) => e.downloadId === undefined && !this.inflight.has(e.blobUrl),
     );
     for (const entry of orphans) {
       try {
         const [item] = await this.downloads.search({ url: entry.blobUrl });
         if (item) {
-          await this.store.update((list) =>
+          await this.updateAll((list) =>
             list.map((e) => (e.blobUrl === entry.blobUrl ? { ...e, downloadId: item.id } : e)),
           );
           await this.catchUp(item.id);
@@ -204,7 +237,7 @@ export class Delivery {
           // Counted before the entry leaves the store, as in `finish`.
           this.releasing++;
           try {
-            await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
+            await this.updateAll((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
           } catch (error) {
             this.releasing--;
             throw error;
@@ -223,10 +256,15 @@ export class Delivery {
     // between the two, or the release would find no host and its OPFS file would be orphaned.
     this.releasing++;
     try {
-      await this.store.update((list) => {
-        entry = list.find((e) => e.downloadId === downloadId);
-        return entry ? list.filter((e) => e !== entry) : list;
-      });
+      for (const store of this.stores) {
+        await store.update((list) => {
+          const found = list.find((e) => e.downloadId === downloadId);
+          if (!found) return list;
+          entry = found;
+          return list.filter((e) => e !== found);
+        });
+        if (entry) break;
+      }
     } catch (error) {
       this.releasing--;
       throw error;
@@ -259,6 +297,6 @@ export class Delivery {
 
   /** True while any delivery is awaiting `onChanged`; the host must stay open until false. */
   async hasPending(): Promise<boolean> {
-    return (await this.store.get()).length > 0;
+    return (await this.getAll()).length > 0;
   }
 }
