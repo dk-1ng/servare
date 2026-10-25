@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Servare</title>
+    <meta name="manifest.type" content="browser_action" />
+    <style>
+      body {
+        min-width: 360px;
+        max-width: 480px;
+        margin: 8px;
+        font: 13px sans-serif;
+      }
+      h2 {
+        font-size: 13px;
+        margin: 12px 0 4px;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      li {
+        padding: 4px 0;
+        border-bottom: 1px solid #8884;
+      }
+      .name {
+        overflow-wrap: anywhere;
+      }
+      .note {
+        color: #888;
+      }
+      progress {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Detected in this tab</h2>
+    <ul id="media"></ul>
+    <h2>Downloads</h2>
+    <ul id="jobs"></ul>
+    <p id="notice" class="note" role="status"></p>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

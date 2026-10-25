@@ -23,6 +23,8 @@ type Target = 'chromium' | 'firefox';
 interface E2eApi {
   start(url: string, filename: string, tabId?: number): Promise<{ jobId: string }>;
   cancel(jobId: string): Promise<null>;
+  openPopup(tabId: number): Promise<void>;
+  closeTabs(prefix: string): Promise<void>;
   rules(): Promise<number[]>;
   tabId(prefix: string): Promise<number | undefined>;
   failures(): Promise<{ jobId: string; error: { kind: string; message: string } }[]>;
@@ -66,6 +68,14 @@ async function prepareExtension(target: Target, work: string): Promise<string> {
   await writeFile(
     path.join(dest, 'e2e.html'),
     '<!doctype html><meta charset="utf-8"><title>Servare E2E</title><script src="e2e-page.js"></script>',
+  );
+  // The popup as a tab cannot ask for "the active tab": a shim answers with the tab in the hash.
+  await cp(path.join(ROOT, 'test/e2e/popup-shim.js'), path.join(dest, 'e2e-popup-shim.js'));
+  const popup = await readFile(path.join(dest, 'popup.html'), 'utf8');
+  assert(popup.includes('</head>'), 'popup.html has no </head>');
+  await writeFile(
+    path.join(dest, 'e2e-popup.html'),
+    popup.replace('</head>', '<script src="e2e-popup-shim.js"></script></head>'),
   );
   if (target === 'firefox') {
     // WebDriver BiDi may not navigate to moz-extension: URLs, so the extension opens the helper
@@ -397,6 +407,90 @@ async function runTarget(target: Target, origin: string): Promise<void> {
       'a file was saved for the cancelled job',
     );
     log.push('  ok   cancelled job: rules removed, OPFS empty, nothing saved');
+
+    // 6. Popup (#16): a detected file is listed and downloads with one click.
+    const popupBase = pageUrl.replace('e2e.html', 'e2e-popup.html');
+    const openPopup = async (tab: number): Promise<Page> => {
+      // Firefox sometimes never reports a new tab over BiDi: close it and open it again.
+      const href = `${popupBase}#tab=${tab}`;
+      let found: Page | undefined;
+      for (let attempt = 1; !found; attempt++) {
+        await call('openPopup', tab);
+        found = await until('popup tab opened', 8000, async () =>
+          findByHref(await browser.pages(), href),
+        ).catch(async (error: unknown) => {
+          if (attempt >= 4) throw error;
+          log.push(`  [popup tab not reported, reopening (attempt ${attempt})]`);
+          await call('closeTabs', popupBase);
+          return undefined;
+        });
+      }
+      found.on('console', (m) => {
+        if (m.type() === 'error') log.push(`  [popup console] ${m.text()}`);
+      });
+      return found;
+    };
+    const clickIn = (popup: Page, label: string): Promise<boolean> =>
+      popup.evaluate((text) => {
+        const found = [...document.querySelectorAll('button')].find((b) => b.textContent === text);
+        found?.click();
+        return found !== undefined;
+      }, label);
+
+    const media = await browser.newPage();
+    await media.goto(`${origin}/pages/player.html?src=/synthetic/2mb.bin`);
+    const mediaTab = await until('media tab id', 10000, async () =>
+      call('tabId', `${origin}/pages/player.html`),
+    );
+    const popup = await openPopup(mediaTab);
+    await until(
+      'detected item listed with a Download button',
+      30000,
+      async () => (await clickIn(popup, 'Download')) || undefined,
+    ).catch(async (error: unknown) => {
+      const text = await popup.evaluate(() => document.body.innerText).catch(() => '');
+      throw new Error(`${String(error)}; popup shows: ${text.replace(/\s+/g, ' ')}`);
+    });
+    const before = new Set(await readdir(downloads));
+    const saved = await until('popup download saved', 60000, async () => {
+      const added = (await readdir(downloads)).filter((f) => !before.has(f));
+      return added.find((f) => f.endsWith('.bin')) ?? undefined;
+    });
+    await until('popup download complete', 30000, async () =>
+      (await call('downloads')).find((d) => d.filename.endsWith(saved) && d.state === 'complete'),
+    );
+    assert(
+      (await stat(path.join(downloads, saved))).size === 2 * 1024 ** 2,
+      `popup download ${saved} has the wrong size`,
+    );
+    log.push(`  ok   popup listed the detected file and downloaded it as ${saved}`);
+    await waitClosedAndClean('after the popup download');
+
+    // Cancel from the popup: the job comes from the helper (the paced file is not detectable),
+    // the popup shows it through job/updated.
+    const { jobId: popupCancelId } = await call(
+      'start',
+      `${origin}/synthetic/2gb.bin?pace=10`,
+      'servare-popup-cancel.bin',
+    );
+    await until(
+      'Cancel button shown',
+      30000,
+      async () => (await clickIn(popup, 'Cancel')) || undefined,
+    );
+    const popupCancelled = await until('popup cancellation reported', 60000, async () =>
+      (await call('failures')).find((f) => f.jobId === popupCancelId),
+    );
+    assert(
+      popupCancelled.error.kind === 'cancelled',
+      `expected cancelled, got ${popupCancelled.error.kind}`,
+    );
+    await waitClosedAndClean('after cancelling from the popup');
+    assert(
+      !(await readdir(downloads)).some((f) => f.includes('popup-cancel')),
+      'a file was saved for the job cancelled from the popup',
+    );
+    log.push('  ok   Cancel in the popup stopped a running job; nothing saved');
   } finally {
     await browser.close().catch(() => undefined);
     if (process.env['E2E_KEEP']) console.info(`  kept ${work}`);

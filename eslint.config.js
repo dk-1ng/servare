@@ -12,6 +12,7 @@ export default tseslint.config(
       'vendor/',
       'test/fixtures/out/',
       'test/e2e/page.js',
+      'test/e2e/popup-shim.js',
     ],
   },
   js.configs.recommended,

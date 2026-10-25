@@ -20,11 +20,15 @@ What it checks, per browser (issue #6):
 4. A file protected by `Referer` + cookie is refused (`http 403`) without the player's headers and
    saved with them; no header rules are left afterwards (issue #11).
 5. Cancelling a running protected download removes its header rules and the temporary file.
+6. The temporary popup (issue #16) lists the file detected on a player tab, downloads it with one
+   click, and its Cancel button stops a running job.
 
 How it works: `puppeteer-core` (no bundled browser) drives Chromium over CDP and Firefox over
 WebDriver BiDi, with isolated temporary profiles and download directories under the OS temp
 dir, removed afterwards. A copy of the build gets a helper page (`page.js`) that triggers the
-temporary `download/start-direct` request and reads OPFS, storage and downloads. The product
-build is never modified. Firefox cannot be navigated to `moz-extension:` URLs over BiDi, so
+temporary `download/start-direct` request and reads OPFS, storage and downloads. The popup
+runs from `e2e-popup.html`, a copy of `popup.html` plus `popup-shim.js`, which answers the popup's
+"active tab" query with the player tab (`#tab=<id>`), since a popup opened as a tab would
+otherwise see itself. The product build is never modified. Firefox cannot be navigated to `moz-extension:` URLs over BiDi, so
 the copy also gets a tiny background script that opens the helper tab; BiDi needs
 `-remote-allow-system-access` to evaluate scripts in extension pages.
