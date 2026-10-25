@@ -27,6 +27,16 @@ globalThis.e2e = {
       });
     });
   },
+  /**
+   * Opens the E2E copy of the popup, which targets `tabId` instead of the active tab. It opens in
+   * the foreground: Firefox over BiDi does not see background tabs.
+   */
+  async openPopup(tabId) {
+    await api.tabs.create({
+      url: api.runtime.getURL(`/e2e-popup.html#tab=${tabId}`),
+      active: true,
+    });
+  },
   /** Sends 'download/cancel' for a job. */
   cancel(jobId) {
     return new Promise((resolve, reject) => {
@@ -45,6 +55,11 @@ globalThis.e2e = {
   /** IDs of the session rules currently installed (header replay uses 1000000+). */
   async rules() {
     return (await api.declarativeNetRequest.getSessionRules()).map((r) => r.id);
+  },
+  /** Closes every tab whose URL starts with `prefix`. */
+  async closeTabs(prefix) {
+    const tabs = await api.tabs.query({});
+    await api.tabs.remove(tabs.filter((t) => (t.url ?? '').startsWith(prefix)).map((t) => t.id));
   },
   /** ID of the first tab whose URL starts with `prefix`. */
   async tabId(prefix) {
