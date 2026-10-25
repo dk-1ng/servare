@@ -234,6 +234,7 @@ There is no attempt to obtain licenses, CDM keys or equivalents.
 - Deduplicated by normalized URL (volatile query parameters removed).
 - When the tab has an HLS/DASH manifest, small direct files and standalone media playlists are hidden by default (usually fragments or ads).
 - Metadata (title, `og:image`, `poster`) read by the content script.
+- **Implemented in #10 (`src/detection/tab-list.ts`, `normalize.ts`, `page-meta.ts`):** entries are keyed by the URL without fragment or volatile parameters (tokens, signatures, expiry stamps, `X-Amz-*`/`X-Goog-*`) and with the rest sorted; the latest URL wins, since its token is freshest. With a manifest in the tab, direct files known to be under 10 MiB are hidden (unknown size stays visible). Regular tabs are mirrored to `storage.session`; **private tabs live only in memory** and are lost if the background is suspended. Whether a tab is private comes from `tabs.get`, not `webRequest`. The content script (top frame, read-only) answers a background request with title, `og:image` or `video[poster]`; only http(s) thumbnails are kept. Direct files have `duration: 0` until a probe exists.
 - **Manual scan:** a "scan this page" action inspects `<video>`/`<source>`; if the player uses `blob:` (MSE) and no manifest was seen, the UI explains why.
 
 ---
