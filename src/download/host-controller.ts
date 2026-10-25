@@ -3,7 +3,12 @@ import type { FromWorker } from './worker-messages';
 
 export interface HostControllerDeps {
   /** `delivery/deliver` to the background. */
-  deliver(request: { jobId: string; blobUrl: string; filename: string }): Promise<unknown>;
+  deliver(request: {
+    jobId: string;
+    blobUrl: string;
+    filename: string;
+    bytes: number;
+  }): Promise<unknown>;
   /** `worker/failed` to the background. */
   /** `worker/progress` to the background. */
   reportProgress(jobId: string, bytesWritten: number, total: number | undefined): Promise<unknown>;
@@ -39,7 +44,7 @@ export class HostController {
     const blobUrl = this.deps.createObjectURL(message.file);
     this.urls.set(jobId, blobUrl);
     try {
-      await this.deps.deliver({ jobId, blobUrl, filename });
+      await this.deps.deliver({ jobId, blobUrl, filename, bytes: message.file.size });
     } catch (error) {
       // Nothing will ever release this job: undo everything here.
       await this.release(jobId).catch((cleanupError: unknown) => {

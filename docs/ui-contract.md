@@ -261,7 +261,7 @@ Rules:
 
 ### 4.3 History
 
-Planned (#15). History respects private windows: private jobs never appear in it (design principle 4).
+Implemented in #15. History respects private windows: private jobs never appear in it (design principle 4), and neither do jobs whose tab is unknown. Cancelled jobs are not recorded. Entries are kept newest first, in `storage.local`, up to 200; older ones are dropped. `history/remove` and `history/clear` emit `history/updated`.
 
 | Name             | Request              | Response         |
 | ---------------- | -------------------- | ---------------- |
@@ -313,7 +313,7 @@ Pushed to every connected port. Names and payloads are final.
 | `tracks/updated`   | schema only (#23) | `{ mediaId, audioTracks: Track[] }` | Alternate audio tracks became known after the manifest was parsed                      |
 | `job/updated`      | implemented       | `{ job: DownloadJob }`              | Any change to a job: status, progress, `bytesWritten`, error, `waiting`                |
 | `job/removed`      | planned (#25)     | `{ jobId }`                         | A terminal job was removed                                                             |
-| `history/updated`  | planned (#15)     | `{ entries: HistoryEntry[] }`       | History changed                                                                        |
+| `history/updated`  | implemented       | `{ entries: HistoryEntry[] }`       | History changed                                                                        |
 | `settings/updated` | planned (#34)     | `{ settings: Settings }`            | Settings or rules changed (e.g. from another page)                                     |
 
 Ordering: events for the same job arrive in order. `job/updated` for a terminal status is always the last one for that job.

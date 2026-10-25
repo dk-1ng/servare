@@ -23,6 +23,7 @@ describe('HostController', () => {
       jobId: 'j1',
       blobUrl: 'blob:abc',
       filename: 'a.mp4',
+      bytes: 1,
     });
     expect(deps.revokeObjectURL).not.toHaveBeenCalled();
     expect(deps.removeJobFile).not.toHaveBeenCalled();

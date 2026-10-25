@@ -331,6 +331,10 @@ Exact origin and redirects (second run, same browsers), with `regexFilter: ^<esc
 
 **Not verified by the spike:** headed browsers and packaged installs; rule behavior across a real Chromium service-worker stop and a Firefox event-page suspension mid-job (the docs only say session rules are dropped on browser shutdown and extension update, so they are expected to survive suspension); interaction with another extension's `modifyHeaders` rules on the same header (Chromium gives the most recently installed extension precedence); Firefox versions between 140 and 158; private-window jobs end to end; the exact-origin `regexFilter` with IPv6 literals, internationalized host names and explicit default ports (`:443`); the redirect-and-retry path inside the real worker; Chromium's regex rule limits (`MAX_NUMBER_OF_REGEX_RULES`) under many concurrent jobs and origins.
 
+#### 4.1.2 Download history
+
+Implemented in #15 (`src/history`). Finished (`done`) and `failed` jobs are recorded in `storage.local`, newest first, capped at 200 entries (the oldest go first); cancelled jobs are not recorded. Private-window jobs are never recorded, and neither are jobs whose tab is unknown or gone (`download/start-direct` without `tabId`): when privacy cannot be told, nothing is kept. A private job does not even keep its title or page URL in `storage.session`. Page URLs over 8192 characters or not http(s) are stored empty. Jobs persisted before the history existed count as private.
+
 ### 4.2 Networking
 
 - Streaming `fetch`, per-host semaphore, exponential backoff with jitter, honoring `429`/`Retry-After`.
