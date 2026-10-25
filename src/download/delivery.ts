@@ -10,6 +10,10 @@ export interface DownloadsApiLike {
     saveAs: boolean;
   }): Promise<number>;
   search(query: { id?: number; url?: string }): Promise<{ id: number; state?: string }[]>;
+  /** Fires with the id even if the context that called `download()` was suspended meanwhile. */
+  onCreated?: {
+    addListener(cb: (item: { id: number; url: string }) => void): void;
+  };
   onChanged: {
     addListener(cb: (delta: DownloadDelta) => void): void;
   };
@@ -36,6 +40,9 @@ export interface DeliveryRequest {
   saveAs: boolean;
 }
 
+/** How long an id-less entry may wait (e.g. an open save-as dialog) before it is given up on. */
+const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
 export type DeliveryOutcome = 'complete' | 'interrupted';
 
 const PendingSchema = z.array(
@@ -43,6 +50,7 @@ const PendingSchema = z.array(
     jobId: z.string(),
     filename: z.string(),
     blobUrl: z.string(),
+    createdAt: z.number(),
     /** Unknown until `downloads.download` resolves, which can be after the first events fire. */
     downloadId: z.number().int().optional(),
   }),
@@ -59,6 +67,8 @@ type Pending = z.infer<typeof PendingSchema>[number];
  */
 export class Delivery {
   private readonly store;
+  /** Blob URLs this context is still delivering; `recover` must not touch them. */
+  private readonly inflight = new Set<string>();
 
   constructor(
     private readonly downloads: DownloadsApiLike,
@@ -87,6 +97,19 @@ export class Delivery {
         });
       }
     });
+    this.downloads.onCreated?.addListener((item) => {
+      this.store
+        .update((list) =>
+          list.map((e) =>
+            e.blobUrl === item.url && e.downloadId === undefined
+              ? { ...e, downloadId: item.id }
+              : e,
+          ),
+        )
+        .catch((error: unknown) => {
+          console.error('[servare] delivery id adoption failed', error);
+        });
+    });
     this.downloads.onDeterminingFilename?.addListener((item, suggest) => {
       // Fires for every download in the browser: always answer, or Chromium waits forever.
       // The id may not be recorded yet, so match on the blob URL, which is stored first.
@@ -107,29 +130,38 @@ export class Delivery {
 
   async deliver(request: DeliveryRequest): Promise<number> {
     const { jobId, blobUrl, filename } = request;
-    await this.store.update((list) => [...list, { jobId, filename, blobUrl }]);
-    let downloadId: number;
+    this.inflight.add(blobUrl);
     try {
-      downloadId = await this.downloads.download({
-        url: blobUrl,
-        filename,
-        conflictAction: 'uniquify',
-        saveAs: request.saveAs,
-      });
-    } catch (error) {
-      await this.store.update((list) => list.filter((e) => e.blobUrl !== blobUrl));
-      throw error;
+      await this.store.update((list) => [
+        ...list,
+        { jobId, filename, blobUrl, createdAt: Date.now() },
+      ]);
+      let downloadId: number;
+      try {
+        downloadId = await this.downloads.download({
+          url: blobUrl,
+          filename,
+          conflictAction: 'uniquify',
+          saveAs: request.saveAs,
+        });
+      } catch (error) {
+        await this.store.update((list) => list.filter((e) => e.blobUrl !== blobUrl));
+        throw error;
+      }
+      // The download already happened: a failure below must not turn into a failed delivery.
+      // `onCreated` and `recover` fill in an id that could not be saved here.
+      try {
+        await this.store.update((list) =>
+          list.map((e) => (e.blobUrl === blobUrl ? { ...e, downloadId } : e)),
+        );
+        await this.catchUp(downloadId);
+      } catch (error) {
+        console.error('[servare] delivery bookkeeping failed', error);
+      }
+      return downloadId;
+    } finally {
+      this.inflight.delete(blobUrl);
     }
-    await this.store.update((list) =>
-      list.map((e) => (e.blobUrl === blobUrl ? { ...e, downloadId } : e)),
-    );
-    // The download already happened: a failure below must not turn into a failed delivery.
-    try {
-      await this.catchUp(downloadId);
-    } catch (error) {
-      console.error('[servare] delivery catch-up failed', error);
-    }
-    return downloadId;
   }
 
   /**
@@ -146,21 +178,29 @@ export class Delivery {
   /**
    * Resolves entries left without an id because the background was suspended or restarted
    * while `downloads.download` was pending (Firefox waits on the save-as dialog). Found by
-   * blob URL: adopt the id and catch up; not found: the download never started, so release.
+   * blob URL: adopt the id and catch up. Not found is NOT final: Firefox creates the item
+   * only after the dialog closes, so an entry is released as `interrupted` only once it is
+   * older than `STALE_AFTER_MS`.
    */
   async recover(): Promise<void> {
-    const orphans = (await this.store.get()).filter((e) => e.downloadId === undefined);
+    const orphans = (await this.store.get()).filter(
+      (e) => e.downloadId === undefined && !this.inflight.has(e.blobUrl),
+    );
     for (const entry of orphans) {
-      const [item] = await this.downloads.search({ url: entry.blobUrl });
-      if (!item) {
-        await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
-        await this.release(entry.jobId, 'interrupted');
-        continue;
+      try {
+        const [item] = await this.downloads.search({ url: entry.blobUrl });
+        if (item) {
+          await this.store.update((list) =>
+            list.map((e) => (e.blobUrl === entry.blobUrl ? { ...e, downloadId: item.id } : e)),
+          );
+          await this.catchUp(item.id);
+        } else if (Date.now() - entry.createdAt > STALE_AFTER_MS) {
+          await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
+          await this.release(entry.jobId, 'interrupted');
+        }
+      } catch (error) {
+        console.error('[servare] delivery recovery failed for one entry', error);
       }
-      await this.store.update((list) =>
-        list.map((e) => (e.blobUrl === entry.blobUrl ? { ...e, downloadId: item.id } : e)),
-      );
-      await this.catchUp(item.id);
     }
   }
 

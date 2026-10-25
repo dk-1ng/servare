@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { QuotaError, ensureFreeSpace } from './storage';
 import {
   OPFS_DIR,
@@ -105,6 +105,38 @@ describe('cleanupOrphans failures', () => {
       }),
     } as DirectoryLike;
     expect(await cleanupOrphans(new Set(), root)).toEqual({ removed: 1, failed: ['a.part'] });
+  });
+});
+
+describe('OpfsWriter.close', () => {
+  it('releases the lock and allows removal even when flush throws', async () => {
+    const fs = new FakeFs();
+    const close = vi.fn();
+    const base = fs.dir.getFileHandle;
+    const failing: DirectoryLike = {
+      ...fs.dir,
+      getFileHandle: async (name, options) => {
+        const file = await base(name, options);
+        return {
+          ...file,
+          createSyncAccessHandle: async () => ({
+            ...(await file.createSyncAccessHandle()),
+            flush: () => {
+              throw new Error('quota');
+            },
+            close,
+          }),
+        };
+      },
+    };
+    const w = await OpfsWriter.open('job1', {
+      ...fs.root,
+      getDirectoryHandle: async () => failing,
+    });
+    expect(() => w.close()).toThrow('quota');
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(() => w.size).toThrow('closed');
+    await expect(w.remove()).resolves.toBeUndefined();
   });
 });
 

@@ -8,6 +8,7 @@ function setup() {
     set: async (items: Record<string, unknown>) => void Object.assign(store, items),
     remove: async (k: string) => void delete store[k],
   };
+  let created!: (item: { id: number; url: string }) => void;
   let changed!: (d: DownloadDelta) => void;
   let determining!: (
     item: { id: number; url: string },
@@ -17,12 +18,23 @@ function setup() {
     download: vi.fn(async () => 7),
     search: vi.fn(async () => [{ id: 7, state: 'in_progress' }]),
     onChanged: { addListener: (cb) => (changed = cb) },
+    onCreated: { addListener: (cb) => (created = cb) },
     onDeterminingFilename: { addListener: (cb) => (determining = cb) },
   };
   const release = vi.fn(async () => {});
   const delivery = new Delivery(downloads, area, release);
   delivery.listen();
-  return { delivery, downloads, release, fire: (d: DownloadDelta) => changed(d), determining };
+  /** A fresh instance over the same storage: the background after a suspend or restart. */
+  const restart = () => new Delivery(downloads, area, release);
+  return {
+    delivery,
+    restart,
+    downloads,
+    release,
+    create: (i: { id: number; url: string }) => created(i),
+    fire: (d: DownloadDelta) => changed(d),
+    determining,
+  };
 }
 
 const request = { jobId: 'j1', blobUrl: 'blob:x', filename: 'a.mp4', saveAs: false };
@@ -110,25 +122,58 @@ describe('Delivery', () => {
   });
 
   it('recovers entries saved without an id', async () => {
-    const { delivery, downloads, release } = setup();
+    const { delivery, restart, downloads, release } = setup();
     // The id is never saved: download() hangs, as when Firefox waits on the save-as dialog.
     vi.mocked(downloads.download).mockReturnValueOnce(new Promise(() => {}));
     void delivery.deliver(request);
     await flush();
     vi.mocked(downloads.search).mockResolvedValue([{ id: 7, state: 'complete' }]);
-    await delivery.recover();
+    const woken = restart();
+    await woken.recover();
     expect(release).toHaveBeenCalledWith('j1', 'complete');
-    expect(await delivery.hasPending()).toBe(false);
+    expect(await woken.hasPending()).toBe(false);
   });
 
-  it('releases an id-less entry whose download never started', async () => {
-    const { delivery, downloads, release } = setup();
+  it('keeps a recent id-less entry that search cannot find, then adopts its id', async () => {
+    const { delivery, restart, downloads, release, create, fire } = setup();
     vi.mocked(downloads.download).mockReturnValueOnce(new Promise(() => {}));
     void delivery.deliver(request);
     await flush();
     vi.mocked(downloads.search).mockResolvedValueOnce([]);
+    await restart().recover();
+    expect(release).not.toHaveBeenCalled();
+    create({ id: 9, url: 'blob:x' });
+    await flush();
+    fire({ id: 9, state: { current: 'complete' } });
+    await flush();
+    expect(release).toHaveBeenCalledWith('j1', 'complete');
+  });
+
+  it('skips entries this context is still delivering', async () => {
+    const { delivery, downloads, release } = setup();
+    vi.mocked(downloads.download).mockReturnValueOnce(new Promise(() => {}));
+    void delivery.deliver(request);
+    await flush();
+    vi.mocked(downloads.search).mockResolvedValue([]);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 25 * 60 * 60 * 1000);
     await delivery.recover();
-    expect(release).toHaveBeenCalledWith('j1', 'interrupted');
-    expect(await delivery.hasPending()).toBe(false);
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it('gives up on a stale id-less entry and survives a failing one', async () => {
+    const { delivery, restart, downloads, release } = setup();
+    vi.mocked(downloads.download).mockReturnValue(new Promise(() => {}));
+    void delivery.deliver(request);
+    void delivery.deliver({ ...request, jobId: 'j2', blobUrl: 'blob:y' });
+    await flush();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 25 * 60 * 60 * 1000);
+    vi.mocked(downloads.search).mockResolvedValue([]);
+    release.mockRejectedValueOnce(new Error('host gone'));
+    const woken = restart();
+    await woken.recover();
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledWith('j2', 'interrupted');
+    expect(await woken.hasPending()).toBe(false);
   });
 });
