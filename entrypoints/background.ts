@@ -37,6 +37,8 @@ interface RunningJob {
   pageUrl: string;
   /** Private-window jobs (or jobs whose tab is unknown) are never added to the history. */
   private: boolean;
+  /** The tab was seen as incognito. Stricter than `private`: unknown tabs are private, not incognito. */
+  incognito?: boolean | undefined;
 }
 
 /** Jobs handed to the worker host whose result has not reached `Delivery` yet. */
@@ -51,6 +53,7 @@ const runningStore = createStore({
       title: z.string(),
       pageUrl: z.string(),
       private: z.boolean(),
+      incognito: z.boolean().optional(),
     }),
   ),
   version: 3,
@@ -86,6 +89,15 @@ const headerReplay = new HeaderReplay(
  */
 const failuresStore = createStore({
   area: localArea,
+  key: 'direct.failures',
+  schema: z.array(z.object({ jobId: z.string(), error: DownloadErrorSchema })),
+  version: 1,
+  defaults: (): { jobId: string; error: DownloadError }[] => [],
+});
+
+/** Failures of private jobs: session only, so nothing about them reaches disk (principle 4). */
+const privateFailuresStore = createStore({
+  area: sessionArea,
   key: 'direct.failures',
   schema: z.array(z.object({ jobId: z.string(), error: DownloadErrorSchema })),
   version: 1,
@@ -193,12 +205,13 @@ const observer = createObserver({
 
 const delivery = new Delivery(
   browser.downloads,
-  localArea,
+  { local: localArea, session: sessionArea },
   async (jobId, outcome) => {
     await requestOverRuntime(browser.runtime, 'delivery/release', { jobId, outcome });
   },
   // Runs after every release, success or not, once it is no longer in flight.
   () => closeHostWhenIdle(),
+  { incognitoOption: platform.downloadsIncognitoOption },
 );
 
 /**
@@ -240,8 +253,10 @@ function settle(jobId: string): void {
 
 /** Records a terminal failure (or cancellation), tells the UI and releases the job's resources. */
 async function failJob(jobId: string, error: DownloadError): Promise<void> {
-  await failuresStore.update((list) => [...list, { jobId, error }].slice(-20));
   const job = (await runningStore.get())[jobId];
+  // An unknown job cannot be shown to be regular: keep its failure off disk.
+  const store = job && !job.private ? failuresStore : privateFailuresStore;
+  await store.update((list) => [...list, { jobId, error }].slice(-20));
   if (job) {
     emitJob(jobId, job, { status: error.kind === 'cancelled' ? 'cancelled' : 'failed', error });
     await recordHistory(jobId, job, error.kind === 'cancelled' ? 'cancelled' : 'failed', 0).catch(
@@ -318,6 +333,7 @@ const handlers: Partial<Handlers> = {
       mediaId: jobId,
       outputName: filename,
       ...jobPageInfo(tab),
+      incognito: tab?.incognito === true,
     };
     try {
       await exclusive(async () => {
@@ -389,8 +405,13 @@ const handlers: Partial<Handlers> = {
   'delivery/deliver': async (request) => {
     // On failure the host cleans up and reports `worker/failed`, which settles the job; closing
     // the host here could cut that cleanup short.
-    const downloadId = await delivery.deliver(request);
     const job = (await runningStore.get())[request.jobId];
+    // A job that is unknown (or persisted before `private` existed) is treated as private.
+    const downloadId = await delivery.deliver({
+      ...request,
+      private: job?.private ?? true,
+      incognito: job?.incognito === true,
+    });
     if (job) {
       emitJob(request.jobId, job, {
         status: 'done',

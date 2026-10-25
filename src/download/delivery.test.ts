@@ -1,13 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Delivery, type DownloadDelta, type DownloadsApiLike } from './delivery';
 
-function setup() {
+function makeArea() {
   const store: Record<string, unknown> = {};
   const area = {
     get: async (k: string) => (k in store ? { [k]: store[k] } : {}),
     set: async (items: Record<string, unknown>) => void Object.assign(store, items),
     remove: async (k: string) => void delete store[k],
   };
+  return { store, area };
+}
+
+function setup(options: { incognitoOption?: boolean } = {}) {
+  const local = makeArea();
+  const session = makeArea();
+  const areas = { local: local.area, session: session.area };
   let created!: (item: { id: number; url: string }) => void;
   let changed!: (d: DownloadDelta) => void;
   let determining!: (
@@ -23,13 +30,21 @@ function setup() {
   };
   const release = vi.fn(async () => {});
   const inFlightAtHook: number[] = [];
-  const delivery: Delivery = new Delivery(downloads, area, release, async () => {
-    inFlightAtHook.push(delivery.releasesInFlight);
-  });
+  const delivery: Delivery = new Delivery(
+    downloads,
+    areas,
+    release,
+    async () => {
+      inFlightAtHook.push(delivery.releasesInFlight);
+    },
+    options,
+  );
   delivery.listen();
   /** A fresh instance over the same storage: the background after a suspend or restart. */
-  const restart = () => new Delivery(downloads, area, release);
+  const restart = () => new Delivery(downloads, areas, release, undefined, options);
   return {
+    localStore: local.store,
+    sessionStore: session.store,
     inFlightAtHook,
     delivery,
     restart,
@@ -217,5 +232,77 @@ describe('Delivery', () => {
     expect(release).toHaveBeenCalledTimes(2);
     expect(release).toHaveBeenCalledWith('j2', 'interrupted');
     expect(await woken.hasPending()).toBe(false);
+  });
+
+  describe('private jobs', () => {
+    const priv = { ...request, private: true, incognito: true };
+
+    it('keeps the pending entry out of storage.local and releases it on completion', async () => {
+      const { delivery, localStore, sessionStore, release, fire } = setup();
+      await delivery.deliver(priv);
+      expect(JSON.stringify(localStore)).not.toContain('a.mp4');
+      expect(JSON.stringify(localStore)).not.toContain('blob:x');
+      expect(JSON.stringify(sessionStore)).toContain('a.mp4');
+      expect(await delivery.hasPending()).toBe(true);
+      fire({ id: 7, state: { current: 'complete' } });
+      await flush();
+      expect(release).toHaveBeenCalledWith('j1', 'complete');
+      expect(await delivery.hasPending()).toBe(false);
+    });
+
+    it('leaves nothing in storage.local when the download is rejected', async () => {
+      const { delivery, downloads, localStore } = setup();
+      vi.mocked(downloads.download).mockRejectedValueOnce(new Error('cancelled'));
+      await expect(delivery.deliver(priv)).rejects.toThrow('cancelled');
+      expect(localStore).toEqual({});
+      expect(await delivery.hasPending()).toBe(false);
+    });
+
+    it('does not send incognito for a private job whose tab was never seen as incognito', async () => {
+      const { delivery, downloads } = setup({ incognitoOption: true });
+      await delivery.deliver({ ...request, private: true });
+      expect(vi.mocked(downloads.download).mock.lastCall?.[0]).not.toHaveProperty('incognito');
+    });
+
+    it('passes incognito only for private jobs, and only where the option exists', async () => {
+      const on = setup({ incognitoOption: true });
+      await on.delivery.deliver(priv);
+      expect(on.downloads.download).toHaveBeenLastCalledWith(
+        expect.objectContaining({ incognito: true }),
+      );
+      await on.delivery.deliver({ ...request, jobId: 'j2', blobUrl: 'blob:y' });
+      expect(vi.mocked(on.downloads.download).mock.lastCall?.[0]).not.toHaveProperty('incognito');
+
+      const off = setup();
+      await off.delivery.deliver(priv);
+      expect(vi.mocked(off.downloads.download).mock.lastCall?.[0]).not.toHaveProperty('incognito');
+    });
+
+    it('still answers the Chromium filename hook and adopts ids for private entries', async () => {
+      const { delivery, downloads, create, determining, fire, release } = setup();
+      vi.mocked(downloads.download).mockImplementationOnce(() => new Promise(() => {}));
+      void delivery.deliver(priv);
+      await flush();
+      const suggest = vi.fn();
+      determining({ id: 9, url: 'blob:x' }, suggest);
+      await flush();
+      expect(suggest).toHaveBeenCalledWith({ filename: 'a.mp4', conflictAction: 'uniquify' });
+      create({ id: 9, url: 'blob:x' });
+      await flush();
+      fire({ id: 9, state: { current: 'complete' } });
+      await flush();
+      expect(release).toHaveBeenCalledWith('j1', 'complete');
+    });
+
+    it('recovers an id-less private entry after a restart', async () => {
+      const { delivery, restart, downloads, release, localStore } = setup();
+      vi.mocked(downloads.download).mockImplementationOnce(() => new Promise(() => {}));
+      void delivery.deliver(priv);
+      await flush();
+      vi.mocked(downloads.search).mockResolvedValue([{ id: 7, state: 'complete' }]);
+      await restart().recover();
+      expect(release).toHaveBeenCalledWith('j1', 'complete');
+      expect(JSON.stringify(localStore)).not.toMatch(/a\.mp4|blob:x/);
+    });
   });
 });

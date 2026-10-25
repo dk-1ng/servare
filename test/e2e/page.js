@@ -53,7 +53,9 @@ globalThis.e2e = {
   },
   async failures() {
     // Stored by the state layer as { v, data }.
-    return (await api.storage.local.get('direct.failures'))['direct.failures']?.data ?? [];
+    // Jobs without a tab count as private, so their failures live in storage.session.
+    const read = async (area) => (await area.get('direct.failures'))['direct.failures']?.data ?? [];
+    return [...(await read(api.storage.local)), ...(await read(api.storage.session))];
   },
   /** Names of the files in OPFS `servare-tmp`; `null` when the directory does not exist. */
   async opfs() {
