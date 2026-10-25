@@ -58,6 +58,10 @@ If the main session is running on Opus and the next issue is not `complexity: hi
 
 Decisions that change the design → update `docs/design.md` in the same PR.
 
+### Release gate (store accounts)
+
+Before starting #37, any release/publish workflow, or the first submission to AMO or the Chrome Web Store, **stop and show the maintainer the checklist in issue #69** (`gh issue view 69 -R dk-1ng/servare`). Explain it in plain terms (the maintainer is not a developer) and wait for confirmation of each item. Do not treat silence or an earlier general approval as confirmation. Also read `docs/design.md` §11 for how the publish job must be separated.
+
 ### Moving a project card
 
 Project: https://github.com/users/dk-1ng/projects/4 · ID `PVT_kwHOE9rcGM4BomU0`

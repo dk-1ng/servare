@@ -32,6 +32,20 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
+  workflows:
+    name: Audit workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        with:
+          version: 1.31.1
+          persona: pedantic
+          advanced-security: false
+          annotations: true
+
   build:
     name: Build (${{ matrix.browser }})
     runs-on: ubuntu-latest
@@ -50,7 +64,9 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec wxt zip -b ${{ matrix.browser }}
+      - run: pnpm exec wxt zip -b "$BROWSER"
+        env:
+          BROWSER: ${{ matrix.browser }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: servare-${{ matrix.browser }}
