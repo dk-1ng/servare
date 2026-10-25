@@ -192,7 +192,7 @@ type DownloadError =
   | { kind: 'unknown'; message: string };
 ```
 
-Message details live in `docs/ui-contract.md` (issue #12).
+Message details live in [`docs/ui-contract.md`](ui-contract.md). It adds, for later issues, `DownloadJob.waiting` (why a `queued` job is not running, §4.1.1) and a `download/stop` request that ends a live recording keeping what was recorded (§4.5), as opposed to `download/cancel`, which discards.
 
 ---
 
@@ -272,7 +272,7 @@ There is no attempt to obtain licenses, CDM keys or equivalents.
 - **Conflicts.** Two running jobs that need different header sets for the same origin would match each other's rules: DNR cannot tell two requests from the same extension apart without changing their URL. The check is keyed on the same exact origin as the rule. The check runs at two points, against every other `running` job:
   - **On the transition to `running`.** A job whose header set for some origin differs from the set a `running` job uses there stays `queued` until that job leaves `running`.
   - **When a running job asks for a rule mid-job** (a new origin in a live playlist, a redirect target). If another running job uses a different header set for that origin, the asking job leaves `running`: its rules are removed as on any exit from `running`, and it goes back to `queued` with `waiting: { reason: 'header-conflict', blockingJobId }`. It resumes from its persisted progress (§4.10). If the values are identical, the rule is added as usual.
-  - A live job (§4.5) can hold this indefinitely. The UI contract (#12, `docs/ui-contract.md`) therefore needs a waiting reason for a queued job, such as `waiting: { reason: 'header-conflict', blockingJobId }`, so the UI can explain it and offer to stop the blocking job.
+  - A live job (§4.5) can hold this indefinitely. The UI contract (`docs/ui-contract.md` §3.2) therefore gives a queued job `waiting: { reason: 'header-conflict', blockingJobId }`, so the UI can explain it and offer to stop the blocking job.
 - **Lifecycle.** The background is suspendable (§2.3), so rules are never tied to a `finally` in background code. They are owned by job state:
   - Rule IDs come from a range reserved for header replay.
   - Before calling `updateSessionRules`, the background writes the job's rule IDs into the job record (write-ahead), so a crash between the two steps leaves an owned rule, not an untracked one.

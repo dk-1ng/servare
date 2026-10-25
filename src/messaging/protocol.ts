@@ -3,7 +3,7 @@ import { DownloadErrorSchema, DownloadJobSchema, MediaItemSchema, TrackSchema } 
 
 /**
  * Every request the background answers, with its payload and response schema.
- * Detailed semantics live in docs/ui-contract.md (issue #12).
+ * Detailed semantics live in docs/ui-contract.md.
  */
 export const requestSchemas = {
   'media/list': {
