@@ -461,3 +461,12 @@ Licensing: libav.js/FFmpeg and LAME are LGPL-2.1. The repository keeps the build
 - **Test server** (Node): requires `Referer`/cookie, injects 5xx errors, supports `Range`, simulates live with a sliding window.
 - **E2E:** Playwright on Chromium; `web-ext` on Firefox; output verified with `ffprobe` (duration, codecs, tracks, sync).
 - **CI:** lint, typecheck, tests and builds for both browsers on every push/PR.
+
+---
+
+## 11. Supply chain and releases
+
+- **CI:** every action is pinned to a full commit SHA (`@<sha> # vX.Y.Z`); `zizmor` audits the workflows on every PR; the repository requires SHA pinning.
+- **Dependencies:** the lockfile is always installed with `--frozen-lockfile`; Dependabot waits 7 days (`cooldown`) before adopting a new version, so a malicious release has time to be reported and removed. Security updates are not delayed.
+- **Release workflow:** publishing happens in a **separate job that does not build**. It receives the finished `.zip`/`.xpi` as an artifact, verifies its checksum, and publishes. Store keys (AMO, Chrome Web Store) live only as secrets of a protected GitHub `environment` with required manual approval, and are never available to jobs that build or run third-party actions (the publish job may use GitHub-owned actions pinned by SHA, or plain `run:` steps).
+- **Store accounts:** the maintainer checklist in issue #69 must be confirmed before the first publication.
