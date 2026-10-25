@@ -1,6 +1,6 @@
 name: Task
 description: Planned unit of work (maintainers)
-labels: ["status: ready"]
+labels: ['status: ready']
 body:
   - type: textarea
     id: context
