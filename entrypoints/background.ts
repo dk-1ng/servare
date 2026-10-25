@@ -3,6 +3,9 @@ import { browser } from 'wxt/browser';
 import { Delivery } from '@/src/download/delivery';
 import { createWorkerHost } from '@/src/platform/worker-host';
 import { platform } from '@/src/platform';
+import { HeaderCache, type HeaderEntry } from '@/src/detection/header-cache';
+import { createObserver, type DetectedMedia } from '@/src/detection/observer';
+import { registerObserver } from '@/src/detection/register';
 import { createStore, localArea, sessionArea } from '@/src/state';
 import {
   DownloadErrorSchema,
@@ -34,6 +37,43 @@ const failuresStore = createStore({
   schema: z.array(z.object({ jobId: z.string(), error: DownloadErrorSchema })),
   version: 1,
   defaults: (): { jobId: string; error: DownloadError }[] => [],
+});
+
+const headerStore = createStore({
+  area: sessionArea,
+  key: 'detection.headers',
+  schema: z.array(z.custom<HeaderEntry>()),
+  version: 1,
+  defaults: (): HeaderEntry[] => [],
+});
+
+const headerCache = new HeaderCache({
+  persist: (entries) => headerStore.set(entries),
+  restore: () => headerStore.get(),
+});
+
+/**
+ * TEMPORARY, until the per-tab list (#10): the latest detections, so a test can read them from
+ * `storage.session` (key `detection.recent`). Newest last, capped.
+ */
+const recentStore = createStore({
+  area: sessionArea,
+  key: 'detection.recent',
+  schema: z.array(z.custom<DetectedMedia>()),
+  version: 1,
+  defaults: (): DetectedMedia[] => [],
+});
+
+const observer = createObserver({
+  ownOrigin: new URL(browser.runtime.getURL('/')).origin,
+  headerCache,
+  onDetect: (media) => {
+    recentStore
+      .update((list) => [...list, media].slice(-50))
+      .catch((error: unknown) => {
+        console.error('[servare] could not record a detection', error);
+      });
+  },
 });
 
 const delivery = new Delivery(browser.downloads, localArea, async (jobId, outcome) => {
@@ -113,6 +153,9 @@ export default defineBackground({
   main() {
     // Listeners are registered synchronously so a wake-up event is never missed.
     delivery.listen();
+    registerObserver(observer, (tabId) => {
+      headerCache.clearTab(tabId);
+    });
     const server = new PortServer(handlers, browser.runtime.getURL('/'));
     browser.runtime.onConnect.addListener((port) => {
       server.accept(port);
