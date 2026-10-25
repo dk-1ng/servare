@@ -196,6 +196,13 @@ describe('runDirectJob retries', () => {
     await runDirectJob(job, h.deps);
     expect(h.calls[1]?.headers?.['If-Range']).toBe('Thu, 01 Jan 1970 00:00:10 GMT');
     expect(h.writer.truncate).toHaveBeenCalledWith(0);
+    // The mismatched partial body is never written; the file is fetched again without Range.
+    expect(h.calls).toHaveLength(3);
+    expect(h.calls[2]?.headers).toEqual({});
+    expect(h.writes).toEqual([
+      [0, [1, 2]],
+      [0, [1, 2, 3, 4]],
+    ]);
   });
 
   it('starts over when the server ignores the range', async () => {

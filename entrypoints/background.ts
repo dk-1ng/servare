@@ -157,14 +157,15 @@ const observer = createObserver({
   },
 });
 
-const delivery = new Delivery(browser.downloads, localArea, async (jobId, outcome) => {
-  try {
+const delivery = new Delivery(
+  browser.downloads,
+  localArea,
+  async (jobId, outcome) => {
     await requestOverRuntime(browser.runtime, 'delivery/release', { jobId, outcome });
-  } finally {
-    // This call is itself the one release in flight.
-    await closeHostWhenIdle(1);
-  }
-});
+  },
+  // Runs after every release, success or not, once it is no longer in flight.
+  () => closeHostWhenIdle(),
+);
 
 /**
  * Serializes host lifecycle steps ("add job + open + start" and "check idle + close"), so a
@@ -178,10 +179,10 @@ function exclusive<T>(task: () => Promise<T>): Promise<T> {
 }
 
 /** The host stays open while a job runs or a blob URL is still being downloaded. */
-function closeHostWhenIdle(ownReleases = 0): Promise<void> {
+function closeHostWhenIdle(): Promise<void> {
   return exclusive(async () => {
     // Another job's release is still on its way to the host: its own end will close it.
-    if (delivery.releasesInFlight > ownReleases) return;
+    if (delivery.releasesInFlight > 0) return;
     if (Object.keys(await runningStore.get()).length > 0 || (await delivery.hasPending())) return;
     await workerHost.close();
   });

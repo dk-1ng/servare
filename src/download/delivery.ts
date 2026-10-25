@@ -78,6 +78,8 @@ export class Delivery {
     private readonly downloads: DownloadsApiLike,
     area: StorageAreaLike,
     private readonly release: (jobId: string, outcome: DeliveryOutcome) => Promise<void>,
+    /** Called after every release, once it no longer counts as in flight (success or not). */
+    private readonly onReleased: () => Promise<void> = async () => {},
   ) {
     this.store = createStore({
       area,
@@ -200,7 +202,7 @@ export class Delivery {
           await this.catchUp(item.id);
         } else if (Date.now() - entry.createdAt > STALE_AFTER_MS) {
           await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
-          await this.release(entry.jobId, 'interrupted');
+          await this.countedRelease(entry.jobId, 'interrupted');
         }
       } catch (error) {
         console.error('[servare] delivery recovery failed for one entry', error);
@@ -209,25 +211,45 @@ export class Delivery {
   }
 
   private async finish(downloadId: number, outcome: DeliveryOutcome): Promise<void> {
+    let entry: Pending | undefined;
     // Counted before the entry leaves the store: the host must not be closed in the gap
     // between the two, or the release would find no host and its OPFS file would be orphaned.
     this.releasing++;
     try {
-      let entry: Pending | undefined;
       await this.store.update((list) => {
         entry = list.find((e) => e.downloadId === downloadId);
         return entry ? list.filter((e) => e !== entry) : list;
       });
-      if (entry) await this.release(entry.jobId, outcome);
+    } catch (error) {
+      this.releasing--;
+      throw error;
+    }
+    if (entry) await this.runRelease(entry.jobId, outcome);
+    else this.releasing--;
+  }
+
+  /** Releases an entry already out of the store; the caller has raised `releasing`. */
+  private async runRelease(jobId: string, outcome: DeliveryOutcome): Promise<void> {
+    try {
+      await this.release(jobId, outcome);
     } finally {
       this.releasing--;
+      // After the decrement, so the last of several overlapping releases always sees zero.
+      await this.onReleased().catch((error: unknown) => {
+        console.error('[servare] post-release hook failed', error);
+      });
     }
+  }
+
+  private countedRelease(jobId: string, outcome: DeliveryOutcome): Promise<void> {
+    this.releasing++;
+    return this.runRelease(jobId, outcome);
   }
 
   /**
    * Finishes between "entry removed from the store" and "release answered". The host must not
-   * be closed for another job in that gap, or the release would find no host and its OPFS file
-   * would be orphaned. The release callback itself counts as one.
+   * be closed in that gap, or the release would find no host and its OPFS file would be
+   * orphaned.
    */
   get releasesInFlight(): number {
     return this.releasing;

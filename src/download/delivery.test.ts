@@ -22,11 +22,15 @@ function setup() {
     onDeterminingFilename: { addListener: (cb) => (determining = cb) },
   };
   const release = vi.fn(async () => {});
-  const delivery = new Delivery(downloads, area, release);
+  const inFlightAtHook: number[] = [];
+  const delivery: Delivery = new Delivery(downloads, area, release, async () => {
+    inFlightAtHook.push(delivery.releasesInFlight);
+  });
   delivery.listen();
   /** A fresh instance over the same storage: the background after a suspend or restart. */
   const restart = () => new Delivery(downloads, area, release);
   return {
+    inFlightAtHook,
     delivery,
     restart,
     downloads,
@@ -77,6 +81,25 @@ describe('Delivery', () => {
     answer();
     await flush();
     expect(delivery.releasesInFlight).toBe(0);
+  });
+
+  it('runs the hook after each release with the counter already lowered', async () => {
+    const { delivery, release, fire, downloads, inFlightAtHook } = setup();
+    vi.mocked(downloads.download).mockResolvedValueOnce(7).mockResolvedValueOnce(8);
+    const answers: (() => void)[] = [];
+    release.mockImplementation(() => new Promise<void>((resolve) => void answers.push(resolve)));
+    await delivery.deliver(request);
+    await delivery.deliver({ ...request, jobId: 'j2', blobUrl: 'blob:y' });
+    fire({ id: 7, state: { current: 'complete' } });
+    fire({ id: 8, state: { current: 'complete' } });
+    await flush();
+    expect(delivery.releasesInFlight).toBe(2);
+    answers[0]?.();
+    await flush();
+    answers[1]?.();
+    await flush();
+    // The first hook still sees the other release; the last one sees none and may close the host.
+    expect(inFlightAtHook).toEqual([1, 0]);
   });
 
   it('releases on interruption and ignores unknown downloads', async () => {

@@ -60,6 +60,9 @@ function isTransientStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
+/** The resumed range did not match: try again from byte 0 at once, without waiting. */
+class Restart extends Error {}
+
 /** Thrown inside an attempt for failures worth another try. */
 class Transient extends Error {
   constructor(
@@ -144,9 +147,17 @@ export async function runDirectJob(
         Number(range?.[1]) !== position ||
         (sizeKnown && total !== undefined && Number(range[2]) !== total)
       ) {
-        // The server ignored the range or the file changed: start over.
         position = 0;
         writer?.truncate(0);
+        if (response.status === 206) {
+          // A partial body that does not continue our bytes is useless, and its length says
+          // nothing about the whole file: drop it and ask again from the start, without Range.
+          await response.body.cancel().catch(() => undefined);
+          validator = undefined;
+          total = undefined;
+          throw new Restart();
+        }
+        // A plain 200 carries the whole file again: read this body from the start.
       }
     }
     if (position === 0) {
@@ -203,6 +214,10 @@ export async function runDirectJob(
       try {
         return await attempt();
       } catch (error) {
+        if (error instanceof Restart) {
+          tries--; // not a failure: it does not use up an attempt
+          continue;
+        }
         if (!(error instanceof Transient)) throw error;
         if (tries >= retry.attempts) throw error.reason;
         const backoff = Math.min(retry.maxMs, retry.baseMs * 2 ** (tries - 1));
