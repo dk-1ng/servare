@@ -45,6 +45,11 @@ export interface DeliveryRequest {
    * `storage.session` only and, where supported, the download itself is made incognito.
    */
   private?: boolean;
+  /**
+   * The tab was actually seen as incognito. Firefox refuses `incognito: true` for an extension
+   * without private-window access, so it is not sent for jobs that are merely of unknown origin.
+   */
+  incognito?: boolean;
 }
 
 export interface DeliveryAreas {
@@ -181,7 +186,7 @@ export class Delivery {
           filename,
           conflictAction: 'uniquify',
           saveAs: request.saveAs,
-          ...(isPrivate && this.options.incognitoOption ? { incognito: true } : {}),
+          ...(request.incognito && this.options.incognitoOption ? { incognito: true } : {}),
         });
       } catch (error) {
         await store.update((list) => list.filter((e) => e.blobUrl !== blobUrl));

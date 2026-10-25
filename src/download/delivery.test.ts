@@ -235,7 +235,7 @@ describe('Delivery', () => {
   });
 
   describe('private jobs', () => {
-    const priv = { ...request, private: true };
+    const priv = { ...request, private: true, incognito: true };
 
     it('keeps the pending entry out of storage.local and releases it on completion', async () => {
       const { delivery, localStore, sessionStore, release, fire } = setup();
@@ -258,6 +258,12 @@ describe('Delivery', () => {
       expect(await delivery.hasPending()).toBe(false);
     });
 
+    it('does not send incognito for a private job whose tab was never seen as incognito', async () => {
+      const { delivery, downloads } = setup({ incognitoOption: true });
+      await delivery.deliver({ ...request, private: true });
+      expect(vi.mocked(downloads.download).mock.lastCall?.[0]).not.toHaveProperty('incognito');
+    });
+
     it('passes incognito only for private jobs, and only where the option exists', async () => {
       const on = setup({ incognitoOption: true });
       await on.delivery.deliver(priv);
@@ -273,14 +279,19 @@ describe('Delivery', () => {
     });
 
     it('still answers the Chromium filename hook and adopts ids for private entries', async () => {
-      const { delivery, create, determining } = setup();
-      await delivery.deliver(priv);
+      const { delivery, downloads, create, determining, fire, release } = setup();
+      vi.mocked(downloads.download).mockImplementationOnce(() => new Promise(() => {}));
+      void delivery.deliver(priv);
+      await flush();
       const suggest = vi.fn();
-      determining({ id: 7, url: 'blob:x' }, suggest);
+      determining({ id: 9, url: 'blob:x' }, suggest);
       await flush();
       expect(suggest).toHaveBeenCalledWith({ filename: 'a.mp4', conflictAction: 'uniquify' });
       create({ id: 9, url: 'blob:x' });
       await flush();
+      fire({ id: 9, state: { current: 'complete' } });
+      await flush();
+      expect(release).toHaveBeenCalledWith('j1', 'complete');
     });
 
     it('recovers an id-less private entry after a restart', async () => {
