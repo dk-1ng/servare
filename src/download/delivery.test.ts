@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Delivery, type DownloadDelta, type DownloadsApiLike } from './delivery';
 
 function setup() {
@@ -41,6 +41,10 @@ const request = { jobId: 'j1', blobUrl: 'blob:x', filename: 'a.mp4', saveAs: fal
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('Delivery', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('downloads with uniquify and keeps the blob until the download completes', async () => {
     const { delivery, downloads, release, fire } = setup();
     expect(await delivery.deliver(request)).toBe(7);

@@ -62,6 +62,9 @@ type Pending = z.infer<typeof PendingSchema>[number];
  * until `downloads.onChanged` reports the end of the download. The background can be
  * suspended in between, hence the pending list lives in storage, not in memory.
  *
+ * If `downloads.download` rejects (e.g. the user cancels Firefox's save-as dialog), `deliver`
+ * throws and the caller owns releasing the blob URL and the OPFS file.
+ *
  * If `release` fails (e.g. the host tab was closed) the entry is still dropped: the host's
  * `cleanupOrphans` at startup is the recovery path for the OPFS file.
  */
