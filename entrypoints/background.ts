@@ -10,7 +10,12 @@ import { PageMetaSchema } from '@/src/detection/page-meta-schema';
 import { TabMediaList, type ListState } from '@/src/detection/tab-list';
 import { registerObserver } from '@/src/detection/register';
 import { HeaderConflictError, HeaderReplay, type ReplayRecord } from '@/src/net/header-replay';
-import { DownloadHistory, type HistoryEntry } from '@/src/history';
+import {
+  addPageInfoToLegacyJobs,
+  DownloadHistory,
+  historyEntryFor,
+  jobPageInfo,
+} from '@/src/history';
 import { createStore, localArea, sessionArea } from '@/src/state';
 import {
   DownloadErrorSchema,
@@ -55,13 +60,7 @@ const runningStore = createStore({
       Object.fromEntries(
         (data as string[]).map((id) => [id, { mediaId: id, outputName: '' }] as const),
       ),
-    // Jobs from before the history are treated as private: nothing is recorded for them.
-    2: (data) =>
-      Object.fromEntries(
-        Object.entries(data as Record<string, { mediaId: string; outputName: string }>).map(
-          ([id, job]) => [id, { ...job, title: '', pageUrl: '', private: true }] as const,
-        ),
-      ),
+    2: addPageInfoToLegacyJobs,
   },
   defaults: (): Record<string, RunningJob> => ({}),
 });
@@ -99,21 +98,12 @@ const history = new DownloadHistory(localArea);
 async function recordHistory(
   jobId: string,
   job: RunningJob,
-  status: HistoryEntry['status'],
+  outcome: 'done' | 'failed' | 'cancelled',
   bytes: number,
 ): Promise<void> {
-  if (job.private) return;
-  const entries = await history.record({
-    id: jobId,
-    title: job.title.slice(0, 1024) || job.outputName,
-    pageUrl: job.pageUrl,
-    outputName: job.outputName,
-    kind: 'direct',
-    completedAt: Date.now(),
-    bytes,
-    status,
-  });
-  server?.emit('history/updated', { entries });
+  const entry = historyEntryFor(job, jobId, outcome, bytes, Date.now());
+  if (!entry) return;
+  server?.emit('history/updated', { entries: await history.record(entry) });
 }
 
 const headerStore = createStore({
@@ -254,9 +244,9 @@ async function failJob(jobId: string, error: DownloadError): Promise<void> {
   const job = (await runningStore.get())[jobId];
   if (job) {
     emitJob(jobId, job, { status: error.kind === 'cancelled' ? 'cancelled' : 'failed', error });
-    if (error.kind !== 'cancelled') {
-      await recordHistory(jobId, job, 'failed', 0).catch(logFailure('record the history'));
-    }
+    await recordHistory(jobId, job, error.kind === 'cancelled' ? 'cancelled' : 'failed', 0).catch(
+      logFailure('record the history'),
+    );
   }
   settle(jobId);
 }
@@ -327,9 +317,7 @@ const handlers: Partial<Handlers> = {
     const job: RunningJob = {
       mediaId: jobId,
       outputName: filename,
-      title: tab?.title ?? '',
-      pageUrl: tab?.url && /^https?:/.test(tab.url) ? tab.url : '',
-      private: tab === undefined || tab.incognito,
+      ...jobPageInfo(tab),
     };
     try {
       await exclusive(async () => {

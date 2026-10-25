@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { DownloadHistory, HISTORY_LIMIT, type HistoryEntry } from './index';
+import {
+  addPageInfoToLegacyJobs,
+  DownloadHistory,
+  HISTORY_LIMIT,
+  historyEntryFor,
+  jobPageInfo,
+  type HistoryEntry,
+} from './index';
 import type { StorageAreaLike } from '../state/store';
 
 function memoryArea(): StorageAreaLike {
@@ -58,5 +65,52 @@ describe('DownloadHistory', () => {
     expect((await history.remove('a')).map((e) => e.id)).toEqual(['b']);
     await history.clear();
     expect(await history.list()).toEqual([]);
+  });
+});
+
+describe('jobPageInfo', () => {
+  it('keeps nothing for a private or unknown tab', () => {
+    const priv = { incognito: true, title: 'secret', url: 'https://example.com/s' };
+    expect(jobPageInfo(priv)).toEqual({ title: '', pageUrl: '', private: true });
+    expect(jobPageInfo(undefined)).toEqual({ title: '', pageUrl: '', private: true });
+  });
+
+  it('keeps title and URL of a regular tab, dropping non-http and oversized URLs', () => {
+    const tab = { incognito: false, title: 'T', url: 'https://example.com/a' };
+    expect(jobPageInfo(tab)).toEqual({ title: 'T', pageUrl: tab.url, private: false });
+    expect(jobPageInfo({ ...tab, url: 'about:blank' }).pageUrl).toBe('');
+    expect(jobPageInfo({ ...tab, url: `https://e.com/${'a'.repeat(9000)}` }).pageUrl).toBe('');
+  });
+});
+
+describe('historyEntryFor', () => {
+  const job = { title: 'T', pageUrl: 'https://e.com/', private: false, outputName: 'a.mp4' };
+
+  it('records done and failed jobs', () => {
+    expect(historyEntryFor(job, 'j', 'done', 5, 9)).toMatchObject({
+      id: 'j',
+      status: 'done',
+      bytes: 5,
+      completedAt: 9,
+      title: 'T',
+    });
+    expect(historyEntryFor(job, 'j', 'failed', 0, 9)?.status).toBe('failed');
+  });
+
+  it('falls back to the file name when there is no title', () => {
+    expect(historyEntryFor({ ...job, title: '' }, 'j', 'done', 1, 1)?.title).toBe('a.mp4');
+  });
+
+  it('records nothing for private or cancelled jobs', () => {
+    expect(historyEntryFor({ ...job, private: true }, 'j', 'done', 1, 1)).toBeUndefined();
+    expect(historyEntryFor(job, 'j', 'cancelled', 0, 1)).toBeUndefined();
+  });
+});
+
+describe('addPageInfoToLegacyJobs', () => {
+  it('marks old jobs private', () => {
+    expect(addPageInfoToLegacyJobs({ a: { mediaId: 'a', outputName: 'x' } })).toEqual({
+      a: { mediaId: 'a', outputName: 'x', title: '', pageUrl: '', private: true },
+    });
   });
 });
