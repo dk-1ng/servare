@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.wasm binary
+*.mp4 binary
+*.webm binary
+*.ts linguist-language=TypeScript
+test/fixtures/** linguist-generated

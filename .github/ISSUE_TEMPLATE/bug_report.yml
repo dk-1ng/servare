@@ -1,0 +1,52 @@
+name: Bug
+description: Algo não funciona como deveria
+title: "fix: "
+labels: ["type: bug", "status: triage"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: O que aconteceu
+      description: Comportamento observado e o esperado.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Como reproduzir
+      placeholder: |
+        1. Abrir uma página com stream HLS…
+        2. Clicar em baixar…
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Navegador
+      multiple: true
+      options: [Firefox, Chrome, Edge, Brave, Outro Chromium]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versões
+      placeholder: "Servare 0.1.0 · Firefox 140"
+  - type: dropdown
+    id: media
+    attributes:
+      label: Tipo de mídia
+      options: [Arquivo direto, HLS, DASH, Ao vivo, Não sei]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Console do background/worker. Remova cookies, tokens e URLs privadas.
+      render: text
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Escopo
+      options:
+        - label: O conteúdo não é do YouTube nem protegido por DRM.
+          required: true

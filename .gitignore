@@ -1,0 +1,19 @@
+# Dependências e build
+node_modules/
+.output/
+.wxt/
+dist/
+web-ext-artifacts/
+
+# Testes
+coverage/
+test/fixtures/out/
+playwright-report/
+test-results/
+
+# Ambiente local
+.env*
+*.log
+.DS_Store
+.claude/settings.local.json
+CLAUDE.local.md

@@ -1,0 +1,25 @@
+name: Tarefa
+description: Unidade de trabalho planejada (uso dos mantenedores)
+labels: ["status: ready"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Contexto
+      description: Por que esta tarefa existe e onde ela está no design.
+    validations:
+      required: true
+  - type: textarea
+    id: tasks
+    attributes:
+      label: Tarefas
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Critérios de aceite
+    validations:
+      required: true
