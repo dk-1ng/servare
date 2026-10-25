@@ -116,11 +116,15 @@ export async function removeJobFile(jobId: string, root?: DirectoryLike): Promis
   await removeTempFile(fileNameFor(jobId), dir);
 }
 
-/** Deletes temp files whose job is no longer known (crash leftovers). Returns how many went. */
+/**
+ * Deletes temp files whose job is no longer known (crash leftovers). A file that cannot be
+ * removed (e.g. still held by an open handle) does not stop the rest. Returns what went and
+ * what stayed.
+ */
 export async function cleanupOrphans(
   keepJobIds: ReadonlySet<string>,
   root?: DirectoryLike,
-): Promise<number> {
+): Promise<{ removed: number; failed: string[] }> {
   const dir = await tempDir(root ?? (await opfsRoot()));
   const stale: string[] = [];
   for await (const [name] of dir.entries()) {
@@ -128,6 +132,15 @@ export async function cleanupOrphans(
       stale.push(name);
     }
   }
-  for (const name of stale) await removeTempFile(name, dir);
-  return stale.length;
+  let removed = 0;
+  const failed: string[] = [];
+  for (const name of stale) {
+    try {
+      await removeTempFile(name, dir);
+      removed++;
+    } catch {
+      failed.push(name);
+    }
+  }
+  return { removed, failed };
 }

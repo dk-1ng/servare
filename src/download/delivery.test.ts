@@ -11,10 +11,11 @@ function setup() {
   let changed!: (d: DownloadDelta) => void;
   let determining!: (
     item: { id: number; url: string },
-    suggest: (s: { filename: string; conflictAction: 'uniquify' }) => void,
+    suggest: (s?: { filename: string; conflictAction: 'uniquify' }) => void,
   ) => unknown;
   const downloads: DownloadsApiLike = {
     download: vi.fn(async () => 7),
+    search: vi.fn(async () => [{ id: 7, state: 'in_progress' }]),
     onChanged: { addListener: (cb) => (changed = cb) },
     onDeterminingFilename: { addListener: (cb) => (determining = cb) },
   };
@@ -74,6 +75,24 @@ describe('Delivery', () => {
     const other = vi.fn();
     determining({ id: 8, url: 'https://elsewhere/' }, other);
     await flush();
-    expect(other).not.toHaveBeenCalled();
+    expect(other).toHaveBeenCalledWith();
+  });
+
+  it('releases a download that already ended before its id was recorded', async () => {
+    const { delivery, downloads, release } = setup();
+    vi.mocked(downloads.search).mockResolvedValueOnce([{ id: 7, state: 'interrupted' }]);
+    await delivery.deliver(request);
+    expect(release).toHaveBeenCalledWith('j1', 'interrupted');
+    expect(await delivery.hasPending()).toBe(false);
+  });
+
+  it('keeps both entries when two jobs are delivered at once', async () => {
+    const { delivery, downloads } = setup();
+    vi.mocked(downloads.download).mockResolvedValueOnce(7).mockResolvedValueOnce(8);
+    await Promise.all([
+      delivery.deliver(request),
+      delivery.deliver({ ...request, jobId: 'j2', blobUrl: 'blob:y' }),
+    ]);
+    expect(await delivery.hasPending()).toBe(true);
   });
 });

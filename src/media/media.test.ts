@@ -32,7 +32,7 @@ class FakeFs {
       return { ...this.dir, entries: () => this.list() };
     },
   };
-  private async *list(): AsyncGenerator<[string, unknown]> {
+  async *list(): AsyncGenerator<[string, unknown]> {
     for (const k of this.files.keys()) yield [k, {}];
   }
   private handleFor(name: string): SyncAccessHandleLike {
@@ -82,8 +82,29 @@ describe('OpfsWriter', () => {
     await OpfsWriter.open('b', fs.root);
     await OpfsWriter.open('c', fs.root);
     await removeJobFile('a', fs.root);
-    expect(await cleanupOrphans(new Set(['b']), fs.root)).toBe(1);
+    expect(await cleanupOrphans(new Set(['b']), fs.root)).toEqual({ removed: 1, failed: [] });
     expect([...fs.files.keys()]).toEqual(['b.part']);
+  });
+});
+
+describe('cleanupOrphans failures', () => {
+  it('keeps going when one file cannot be removed', async () => {
+    const fs = new FakeFs();
+    await OpfsWriter.open('a', fs.root);
+    await OpfsWriter.open('b', fs.root);
+    const root = {
+      ...fs.root,
+      getDirectoryHandle: async () => ({
+        ...fs.dir,
+        entries: () => fs.list(),
+        removeEntry: async (n: string) => {
+          if (n === 'a.part')
+            throw Object.assign(new Error('busy'), { name: 'NoModificationAllowedError' });
+          return fs.dir.removeEntry(n);
+        },
+      }),
+    } as DirectoryLike;
+    expect(await cleanupOrphans(new Set(), root)).toEqual({ removed: 1, failed: ['a.part'] });
   });
 });
 

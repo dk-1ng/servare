@@ -1,4 +1,5 @@
-import type { StorageAreaLike } from '../state';
+import { z } from 'zod';
+import { createStore, type StorageAreaLike } from '../state';
 
 /** The subset of `browser.downloads` the delivery needs. */
 export interface DownloadsApiLike {
@@ -8,6 +9,7 @@ export interface DownloadsApiLike {
     conflictAction: 'uniquify';
     saveAs: boolean;
   }): Promise<number>;
+  search(query: { id: number }): Promise<{ id: number; state?: string }[]>;
   onChanged: {
     addListener(cb: (delta: DownloadDelta) => void): void;
   };
@@ -16,7 +18,7 @@ export interface DownloadsApiLike {
     addListener(
       cb: (
         item: { id: number; url: string },
-        suggest: (s: { filename: string; conflictAction: 'uniquify' }) => void,
+        suggest: (s?: { filename: string; conflictAction: 'uniquify' }) => void,
       ) => void,
     ): void;
   };
@@ -36,90 +38,108 @@ export interface DeliveryRequest {
 
 export type DeliveryOutcome = 'complete' | 'interrupted';
 
-interface Pending {
-  jobId: string;
-  filename: string;
-  blobUrl: string;
-  /** Unknown until `downloads.download` resolves, which can be after the first events fire. */
-  downloadId?: number;
-}
-
-const KEY = 'delivery.pending';
+const PendingSchema = z.array(
+  z.object({
+    jobId: z.string(),
+    filename: z.string(),
+    blobUrl: z.string(),
+    /** Unknown until `downloads.download` resolves, which can be after the first events fire. */
+    downloadId: z.number().int().optional(),
+  }),
+);
+type Pending = z.infer<typeof PendingSchema>[number];
 
 /**
  * Background side of §4.9. The blob URL lives in the worker host, so it must stay valid
  * until `downloads.onChanged` reports the end of the download. The background can be
  * suspended in between, hence the pending list lives in storage, not in memory.
+ *
+ * If `release` fails (e.g. the host tab was closed) the entry is still dropped: the host's
+ * `cleanupOrphans` at startup is the recovery path for the OPFS file.
  */
 export class Delivery {
+  private readonly store;
+
   constructor(
     private readonly downloads: DownloadsApiLike,
-    private readonly area: StorageAreaLike,
+    area: StorageAreaLike,
     private readonly release: (jobId: string, outcome: DeliveryOutcome) => Promise<void>,
-  ) {}
+  ) {
+    this.store = createStore({
+      area,
+      key: 'delivery.pending',
+      schema: PendingSchema,
+      version: 1,
+      defaults: (): Pending[] => [],
+    });
+  }
 
   /** Register listeners synchronously at startup so a wake-up event is not missed. */
   listen(): void {
     this.downloads.onChanged.addListener((delta) => {
       const state = delta.state?.current;
       if (state === 'complete' || state === 'interrupted') {
-        void this.finish(delta.id, state);
+        this.finish(delta.id, state).catch((error: unknown) => {
+          console.error('[servare] delivery release failed', error);
+        });
       }
     });
     this.downloads.onDeterminingFilename?.addListener((item, suggest) => {
+      // Fires for every download in the browser: always answer, or Chromium waits forever.
       // The id may not be recorded yet, so match on the blob URL, which is stored first.
-      void this.pending().then((list) => {
-        const entry = list.find((e) => e.blobUrl === item.url);
-        if (entry) suggest({ filename: entry.filename, conflictAction: 'uniquify' });
-      });
+      this.store
+        .get()
+        .then((list) => {
+          const entry = list.find((e) => e.blobUrl === item.url);
+          if (entry) suggest({ filename: entry.filename, conflictAction: 'uniquify' });
+          else suggest();
+        })
+        .catch(() => {
+          suggest();
+        });
       // Keeps the suggest callback valid after this listener returns (async response).
       return true;
     });
   }
 
   async deliver(request: DeliveryRequest): Promise<number> {
-    const entry: Pending = {
-      jobId: request.jobId,
-      filename: request.filename,
-      blobUrl: request.blobUrl,
-    };
-    await this.save([...(await this.pending()), entry]);
+    const { jobId, blobUrl, filename } = request;
+    await this.store.update((list) => [...list, { jobId, filename, blobUrl }]);
     let downloadId: number;
     try {
       downloadId = await this.downloads.download({
-        url: request.blobUrl,
-        filename: request.filename,
+        url: blobUrl,
+        filename,
         conflictAction: 'uniquify',
         saveAs: request.saveAs,
       });
     } catch (error) {
-      await this.save((await this.pending()).filter((e) => e.blobUrl !== request.blobUrl));
+      await this.store.update((list) => list.filter((e) => e.blobUrl !== blobUrl));
       throw error;
     }
-    entry.downloadId = downloadId;
-    await this.save((await this.pending()).map((e) => (e.blobUrl === entry.blobUrl ? entry : e)));
+    await this.store.update((list) =>
+      list.map((e) => (e.blobUrl === blobUrl ? { ...e, downloadId } : e)),
+    );
+    // A small file or a cancelled save-as dialog can end before the id was recorded, and
+    // that terminal event was then unmatched. Catch up from the download's current state.
+    const [item] = await this.downloads.search({ id: downloadId });
+    if (item?.state === 'complete' || item?.state === 'interrupted') {
+      await this.finish(downloadId, item.state);
+    }
     return downloadId;
   }
 
-  private async pending(): Promise<Pending[]> {
-    const stored = (await this.area.get(KEY))[KEY];
-    return Array.isArray(stored) ? (stored as Pending[]) : [];
-  }
-
-  private save(list: Pending[]): Promise<void> {
-    return this.area.set({ [KEY]: list });
-  }
-
   private async finish(downloadId: number, outcome: DeliveryOutcome): Promise<void> {
-    const list = await this.pending();
-    const entry = list.find((e) => e.downloadId === downloadId);
-    if (!entry) return;
-    await this.save(list.filter((e) => e !== entry));
-    await this.release(entry.jobId, outcome);
+    let entry: Pending | undefined;
+    await this.store.update((list) => {
+      entry = list.find((e) => e.downloadId === downloadId);
+      return entry ? list.filter((e) => e !== entry) : list;
+    });
+    if (entry) await this.release(entry.jobId, outcome);
   }
 
   /** True while any delivery is awaiting `onChanged`; the host must stay open until false. */
   async hasPending(): Promise<boolean> {
-    return (await this.pending()).length > 0;
+    return (await this.store.get()).length > 0;
   }
 }
