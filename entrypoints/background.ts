@@ -173,7 +173,7 @@ async function readPageMeta(tabId: number): Promise<PageMeta> {
 }
 
 async function recordDetection(media: DetectedMedia): Promise<void> {
-  const generation = tabList.generation(media.tabId);
+  const snapshot = tabList.snapshot(media.tabId);
   const tab = await browser.tabs.get(media.tabId);
   // The MediaItem contract only carries http(s) page URLs.
   if (!tab.url || !/^https?:/.test(tab.url)) return;
@@ -186,7 +186,7 @@ async function recordDetection(media: DetectedMedia): Promise<void> {
       thumbnail: meta.thumbnail,
     },
     tab.incognito,
-    generation,
+    snapshot,
   );
   await publish(media.tabId);
 }
@@ -445,9 +445,20 @@ export default defineBackground({
       headerCache.clearTab(tabId);
       dropTab(tabId).catch(logFailure('clear the media list'));
     });
-    // A new top-level navigation starts a new list (design §3.5).
-    browser.webNavigation.onBeforeNavigate.addListener(({ tabId, frameId }) => {
-      if (frameId === 0) dropTab(tabId).catch(logFailure('clear the media list'));
+    // A new top-level document starts a new list (design §3.5). Not `onBeforeNavigate`: a
+    // download link or a 204 starts a navigation that never replaces the page.
+    browser.webNavigation.onCommitted.addListener((details) => {
+      // Absent on Firefox before 153, despite the typings.
+      const { documentId } = details as { documentId?: unknown };
+      const id = typeof documentId === 'string' ? documentId : undefined;
+      if (details.frameId !== 0) {
+        tabList.noteFrame(details.tabId, id);
+        return;
+      }
+      tabList
+        .commit({ tabId: details.tabId, url: details.url, documentId: id })
+        .then((changed) => (changed ? publish(details.tabId) : undefined))
+        .catch(logFailure('clear the media list'));
     });
     server = new PortServer(handlers, browser.runtime.getURL('/'));
     browser.runtime.onConnect.addListener((port) => {

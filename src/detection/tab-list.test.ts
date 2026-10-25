@@ -127,11 +127,11 @@ describe('TabMediaList', () => {
     expect(await new TabMediaList({ store }).items(1)).toHaveLength(1);
   });
 
-  it('ignores a detection that began before a clear', async () => {
+  it('ignores a detection that began before the tab was closed', async () => {
     const { list } = setup();
-    const generation = list.generation(1);
+    const snapshot = list.snapshot(1);
     await list.clear(1);
-    await list.add(media(), page, false, generation);
+    await list.add(media(), page, false, snapshot);
     expect(await list.items(1)).toEqual([]);
     await list.add(media(), page, false);
     expect(await list.items(1)).toHaveLength(1);
@@ -152,6 +152,133 @@ describe('TabMediaList', () => {
     const [item] = await list.items(1);
     expect((await list.find(item?.id ?? ''))?.entry.url).toBe(media().url);
     expect(await list.find('nope')).toBeUndefined();
+  });
+});
+
+describe('TabMediaList document tracking (design §3.5)', () => {
+  const next = 'https://example.com/next';
+
+  it('keeps the list when a navigation never commits (download link, 204)', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    await list.add(media({ documentId: 'A' }), page, false);
+    // No commit follows: the list is untouched.
+    expect(await list.items(1)).toHaveLength(1);
+  });
+
+  it('drops the previous document on commit, in regular and private tabs', async () => {
+    for (const incognito of [false, true]) {
+      const { list } = setup();
+      await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+      await list.add(media({ documentId: 'A' }), page, incognito);
+      await list.add(media({ url: 'https://c.com/old.mp4' }), page, incognito);
+      expect(await list.commit({ tabId: 1, url: next, documentId: 'B' })).toBe(true);
+      expect(await list.items(1)).toEqual([]);
+      expect(await list.commit({ tabId: 1, url: next, documentId: 'B' })).toBe(false);
+    }
+  });
+
+  it('ignores late responses from a document the tab has left, and from its frames', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    list.noteFrame(1, 'A-frame');
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    await list.add(media({ documentId: 'A' }), page, false);
+    await list.add(media({ url: 'https://c.com/f.mp4', documentId: 'A-frame' }), page, false);
+    await list.add(media({ url: 'https://c.com/g.mp4', parentDocumentId: 'A-frame' }), page, true);
+    await list.add(media({ url: 'https://c.com/i.mp4', parentDocumentId: 'A' }), page, false);
+    expect(await list.items(1)).toEqual([]);
+    await list.add(media({ url: 'https://c.com/b.mp4', documentId: 'B' }), page, false);
+    expect((await list.items(1)).map((i) => i.url)).toEqual(['https://c.com/b.mp4']);
+  });
+
+  it('drops a late response whose write was queued before the commit', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    const adding = list.add(media({ documentId: 'A' }), page, false);
+    const committing = list.commit({ tabId: 1, url: next, documentId: 'B' });
+    await Promise.all([adding, committing]);
+    expect(await list.items(1)).toEqual([]);
+  });
+
+  it('keeps what the new document reported before its commit arrived', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    await list.add(media({ url: 'https://c.com/a.mp4', documentId: 'A' }), page, false);
+    await list.add(media({ url: 'https://c.com/b.mp4', documentId: 'B' }), page, false);
+    await list.add(media({ url: 'https://c.com/frame.mp4', parentDocumentId: 'B' }), page, false);
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    const items = await list.items(1);
+    expect(items.map((i) => i.url)).toEqual(['https://c.com/b.mp4', 'https://c.com/frame.mp4']);
+    // The title came from the previous page; only the committed URL is known now.
+    expect(items[0]).toMatchObject({ pageUrl: next, title: 'b.mp4' });
+  });
+
+  it('moves media shared by both pages to the new document', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    await list.add(media({ documentId: 'A' }), page, false);
+    await list.add(media({ documentId: 'B' }), page, false);
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    expect(await list.items(1)).toHaveLength(1);
+  });
+
+  it('keeps a media file opened in the tab, whatever the order of response and commit', async () => {
+    const url = 'https://c.com/top.mp4?token=x';
+    const navigation = media({ url });
+    const before = setup();
+    await before.list.add(navigation, page, false);
+    await before.list.commit({ tabId: 1, url, documentId: 'M' });
+    expect((await before.list.items(1)).map((i) => i.pageUrl)).toEqual([url]);
+    const after = setup();
+    await after.list.commit({ tabId: 1, url, documentId: 'M' });
+    await after.list.add(navigation, { pageUrl: url }, false);
+    expect(await after.list.items(1)).toHaveLength(1);
+    // A navigation response elsewhere in the old page does not survive.
+    await after.list.commit({ tabId: 1, url: next, documentId: 'N' });
+    expect(await after.list.items(1)).toEqual([]);
+  });
+
+  it('records the committed URL when the page was read before the commit', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    const snapshot = list.snapshot(1);
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    await list.add(media({ documentId: 'B' }), page, false, snapshot);
+    expect((await list.items(1))[0]).toMatchObject({ pageUrl: next, title: 'clip.mp4' });
+    await list.commit({ tabId: 1, url: 'about:blank', documentId: 'C' });
+    const blank = list.snapshot(1);
+    await list.commit({ tabId: 1, url: 'about:blank', documentId: 'D' });
+    await list.add(media({ documentId: 'D' }), page, false, blank);
+    expect(await list.items(1)).toEqual([]);
+  });
+
+  it('brings a document back from the back/forward cache', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    await list.add(media({ documentId: 'A' }), page, false);
+    expect(await list.items(1)).toHaveLength(1);
+  });
+
+  it('clears on commit without document IDs (Firefox before 153)', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl });
+    await list.add(media(), page, false);
+    await list.commit({ tabId: 1, url: next });
+    expect(await list.items(1)).toEqual([]);
+    await list.add(media(), { pageUrl: next }, false);
+    expect(await list.items(1)).toHaveLength(1);
+  });
+
+  it('forgets the documents of a closed tab', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    await list.clear(1);
+    await list.add(media({ documentId: 'A' }), page, false);
+    expect(await list.items(1)).toHaveLength(1);
   });
 });
 

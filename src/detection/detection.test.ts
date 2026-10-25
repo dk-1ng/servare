@@ -369,6 +369,15 @@ describe('observer', () => {
     ]);
   });
 
+  it('passes on the requesting document when the browser reports it', () => {
+    const { found, observer } = setup();
+    observer.onResponseStarted(mp4({ documentId: 'D1', parentDocumentId: 'P1' }));
+    observer.onResponseStarted(mp4({ url: 'https://cdn.example.com/other.mp4' }));
+    expect(found[0]).toMatchObject({ documentId: 'D1', parentDocumentId: 'P1' });
+    expect(found[1]).not.toHaveProperty('documentId');
+    expect(found[1]).not.toHaveProperty('parentDocumentId');
+  });
+
   it('skips own requests (by initiator), tabless requests and non-HTTP schemes', () => {
     const { found, observer, cache } = setup();
     observer.onResponseStarted(mp4({ initiator: OWN }));

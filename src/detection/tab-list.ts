@@ -9,6 +9,8 @@ export const SMALL_DIRECT_SIZE = 10 * 1024 * 1024;
 const MAX_ENTRIES_PER_TAB = 100;
 const MAX_URL_LENGTH = 8192;
 const MAX_TITLE_LENGTH = 1024;
+/** Retired document IDs remembered per tab: enough for a burst of navigations. */
+const MAX_RETIRED_DOCUMENTS = 64;
 
 /** What the tab says about itself, from `tabs.get` and the content script. */
 export interface PageInfo {
@@ -29,6 +31,37 @@ export interface Entry {
   size?: number | undefined;
   resumable: boolean;
   detectedAt: number;
+  /** From the latest detection: which document asked for it (design §3.5). */
+  documentId?: string | undefined;
+  parentDocumentId?: string | undefined;
+}
+
+/** A top-frame `webNavigation.onCommitted`. */
+export interface Commit {
+  tabId: number;
+  url: string;
+  /** Absent on Firefox before 153. */
+  documentId?: string | undefined;
+}
+
+/**
+ * Documents seen in a tab, in memory only. Losing it to a suspension costs little: suspension
+ * needs about 30 s without events, longer than a left page's requests stay in flight.
+ */
+interface TabDocuments {
+  /** The top document and the frames committed under it since. */
+  live: Set<string>;
+  /** Documents the tab has navigated away from, oldest first. */
+  retired: string[];
+  /** Top-frame commits seen, and the URL of the latest. */
+  commits: number;
+  url: string;
+}
+
+/** What `add` needs to know about the moment a detection started. */
+export interface Snapshot {
+  generation: number;
+  commits: number;
 }
 
 export interface TabState {
@@ -101,30 +134,63 @@ export class TabMediaList {
   private readonly store: Store<ListState>;
   /** Bumped by `clear`, so a detection that began before it cannot bring the old list back. */
   private readonly generations = new Map<number, number>();
+  private readonly documents = new Map<number, TabDocuments>();
 
   constructor(options: TabMediaListOptions) {
     this.store = options.store;
   }
 
-  /** Read synchronously when a detection starts, before any `await`, and pass it to `add`. */
-  generation(tabId: number): number {
+  private generation(tabId: number): number {
     return this.generations.get(tabId) ?? 0;
+  }
+
+  /** Read synchronously when a detection starts, before any `await`, and pass it to `add`. */
+  snapshot(tabId: number): Snapshot {
+    return {
+      generation: this.generation(tabId),
+      commits: this.documents.get(tabId)?.commits ?? 0,
+    };
+  }
+
+  /** Whether a detection comes from a document the tab has navigated away from. */
+  private isStale(media: DetectedMedia): boolean {
+    const retired = this.documents.get(media.tabId)?.retired;
+    if (!retired) return false;
+    return [media.documentId, media.parentDocumentId].some(
+      (id) => id !== undefined && retired.includes(id),
+    );
+  }
+
+  /** Whether the tab was closed since the snapshot, or the detection is stale. */
+  private isDropped(media: DetectedMedia, snapshot: Snapshot): boolean {
+    return snapshot.generation !== this.generation(media.tabId) || this.isStale(media);
+  }
+
+  /**
+   * The page info to record. If the top frame committed since the snapshot, what was read about
+   * the page describes the previous one: only the committed URL is known.
+   */
+  private pageFor(tabId: number, page: PageInfo, snapshot: Snapshot): PageInfo | undefined {
+    const docs = this.documents.get(tabId);
+    if (!docs || docs.commits === snapshot.commits) return page;
+    return /^https?:/.test(docs.url) ? { pageUrl: docs.url } : undefined;
   }
 
   /**
    * Adds a detection, merging it into an existing entry with the same normalized URL. Does
-   * nothing if the tab was cleared since `generation` was read, or if a URL is oversized.
+   * nothing if the tab was closed since the snapshot, if the detection comes from a document
+   * the tab has left (design §3.5), or if a URL is oversized.
    */
   async add(
     media: DetectedMedia,
-    page: PageInfo,
+    pageRead: PageInfo,
     incognito: boolean,
-    generation = this.generation(media.tabId),
+    snapshot = this.snapshot(media.tabId),
   ): Promise<void> {
-    if (generation !== this.generation(media.tabId)) return;
-    if (media.url.length > MAX_URL_LENGTH || page.pageUrl.length > MAX_URL_LENGTH) return;
+    if (this.isDropped(media, snapshot)) return;
+    if (media.url.length > MAX_URL_LENGTH || pageRead.pageUrl.length > MAX_URL_LENGTH) return;
     const key = normalizeUrl(media.url);
-    const apply = (state: TabState | undefined): TabState => {
+    const apply = (state: TabState | undefined, page: PageInfo): TabState => {
       const entries = state?.entries ?? [];
       const existing = entries.find((entry) => entry.key === key);
       const next: Entry[] = existing
@@ -133,6 +199,11 @@ export class TabMediaList {
               ? {
                   ...entry,
                   url: media.url,
+                  frameId: media.frameId,
+                  // The latest request decides which document the entry belongs to: the same
+                  // media on the next page must survive that page's commit.
+                  documentId: media.documentId,
+                  parentDocumentId: media.parentDocumentId,
                   mime: media.mime ?? entry.mime,
                   size: media.size ?? entry.size,
                   resumable: media.resumable || entry.resumable,
@@ -151,6 +222,8 @@ export class TabMediaList {
               size: media.size,
               resumable: media.resumable,
               detectedAt: media.detectedAt,
+              documentId: media.documentId,
+              parentDocumentId: media.parentDocumentId,
             },
           ];
       // A failed metadata read must not erase a thumbnail found earlier.
@@ -161,20 +234,88 @@ export class TabMediaList {
       };
     };
     if (incognito) {
-      this.privateTabs.set(media.tabId, apply(this.privateTabs.get(media.tabId)));
+      const page = this.pageFor(media.tabId, pageRead, snapshot);
+      if (page) this.privateTabs.set(media.tabId, apply(this.privateTabs.get(media.tabId), page));
       return;
     }
-    await this.store.update((all) =>
-      // Re-checked inside the serialized write: a `clear` may have run while this one waited.
-      generation !== this.generation(media.tabId)
-        ? all
-        : { ...all, [String(media.tabId)]: apply(all[String(media.tabId)]) },
-    );
+    await this.store.update((all) => {
+      // Re-checked inside the serialized write: a `clear` or `commit` may have run meanwhile.
+      const page = this.pageFor(media.tabId, pageRead, snapshot);
+      if (!page || this.isDropped(media, snapshot)) return all;
+      return { ...all, [String(media.tabId)]: apply(all[String(media.tabId)], page) };
+    });
   }
 
-  /** Drops a tab's list (navigation or close). Returns whether anything was dropped. */
+  /** A frame below the top one committed a document: it belongs to the current page. */
+  noteFrame(tabId: number, documentId: string | undefined): void {
+    if (documentId !== undefined) this.documents.get(tabId)?.live.add(documentId);
+  }
+
+  /**
+   * The top frame committed a new document (design §3.5). Every document seen so far in the tab
+   * is retired, so their late responses are ignored, and the list keeps only what already
+   * belongs to the new document: its own requests, its direct frames, and the navigation
+   * response itself (a media file opened in the tab). Returns whether the list changed.
+   */
+  async commit({ tabId, url, documentId }: Commit): Promise<boolean> {
+    const previous = this.documents.get(tabId);
+    const retired = [...(previous?.retired ?? []), ...(previous?.live ?? [])]
+      // Back/forward cache: a restored document is current again.
+      .filter((id) => id !== documentId)
+      .slice(-MAX_RETIRED_DOCUMENTS);
+    this.documents.set(tabId, {
+      live: new Set(documentId === undefined ? [] : [documentId]),
+      retired,
+      commits: (previous?.commits ?? 0) + 1,
+      url,
+    });
+    const key = normalizeUrl(url);
+    const belongs = (entry: Entry): boolean => {
+      // The MediaItem contract only carries http(s) page URLs.
+      if (!/^https?:/.test(url)) return false;
+      if (documentId !== undefined) {
+        if (entry.documentId === documentId || entry.parentDocumentId === documentId) return true;
+      }
+      // A navigation response has no document yet; in the top frame it is the page itself.
+      return (
+        entry.documentId === undefined &&
+        entry.parentDocumentId === undefined &&
+        entry.frameId === 0 &&
+        entry.key === key
+      );
+    };
+    /** `undefined` when nothing is left; the same object when nothing changed. */
+    const prune = (state: TabState): TabState | undefined => {
+      const entries = state.entries.filter(belongs);
+      if (entries.length === 0) return undefined;
+      if (entries.length === state.entries.length && state.page.pageUrl === url) return state;
+      // Title and thumbnail were read from the previous page; the next detection refreshes them.
+      return { page: { pageUrl: url }, entries };
+    };
+    let changed = false;
+    const privateState = this.privateTabs.get(tabId);
+    if (privateState) {
+      const next = prune(privateState);
+      changed = next !== privateState;
+      if (next) this.privateTabs.set(tabId, next);
+      else this.privateTabs.delete(tabId);
+    }
+    await this.store.update((all) => {
+      const state = all[String(tabId)];
+      if (!state) return all;
+      const next = prune(state);
+      if (next === state) return all;
+      changed = true;
+      const rest = Object.fromEntries(Object.entries(all).filter(([id]) => id !== String(tabId)));
+      return next ? { ...rest, [String(tabId)]: next } : rest;
+    });
+    return changed;
+  }
+
+  /** Drops a closed tab's list. Returns whether anything was dropped. */
   async clear(tabId: number): Promise<boolean> {
     this.generations.set(tabId, this.generation(tabId) + 1);
+    this.documents.delete(tabId);
     const hadPrivate = this.privateTabs.delete(tabId);
     let hadStored = false;
     await this.store.update((all) => {

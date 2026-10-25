@@ -13,6 +13,13 @@ export interface DetectedMedia {
   size?: number;
   resumable: boolean;
   detectedAt: number;
+  /**
+   * The document that made the request (Chromium 106+, Firefox 153+). Absent for navigation
+   * requests and on older Firefox; it ties the detection to a page (design §3.5).
+   */
+  documentId?: string;
+  /** The parent of the requesting document, or of the frame being navigated. */
+  parentDocumentId?: string;
 }
 
 interface HeaderPair {
@@ -31,6 +38,8 @@ interface RequestDetails {
   documentUrl?: string | undefined;
   cookieStoreId?: string | undefined;
   incognito?: boolean | undefined;
+  documentId?: string | undefined;
+  parentDocumentId?: string | undefined;
 }
 
 export interface SendHeadersDetails extends RequestDetails {
@@ -129,6 +138,10 @@ export function createObserver(options: ObserverOptions) {
         url: details.url,
         ...result,
         detectedAt: now(),
+        ...(typeof details.documentId === 'string' && { documentId: details.documentId }),
+        ...(typeof details.parentDocumentId === 'string' && {
+          parentDocumentId: details.parentDocumentId,
+        }),
       });
     },
   };
