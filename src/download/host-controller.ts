@@ -5,6 +5,8 @@ export interface HostControllerDeps {
   /** `delivery/deliver` to the background. */
   deliver(request: { jobId: string; blobUrl: string; filename: string }): Promise<unknown>;
   /** `worker/failed` to the background. */
+  /** `worker/progress` to the background. */
+  reportProgress(jobId: string, bytesWritten: number, total: number | undefined): Promise<unknown>;
   reportFailure(jobId: string, error: DownloadError): Promise<unknown>;
   createObjectURL(blob: Blob): string;
   revokeObjectURL(url: string): void;
@@ -22,6 +24,13 @@ export class HostController {
   constructor(private readonly deps: HostControllerDeps) {}
 
   async onWorkerMessage(message: FromWorker): Promise<void> {
+    if (message.type === 'progress') {
+      // Progress is best effort: a lost update is replaced by the next one.
+      await this.deps
+        .reportProgress(message.jobId, message.bytesWritten, message.total)
+        .catch(() => undefined);
+      return;
+    }
     if (message.type === 'failed') {
       await this.report(message.jobId, message.error);
       return;

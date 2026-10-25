@@ -35,6 +35,10 @@ export class WorkerHost {
     }
   }
 
+  exists(): Promise<boolean> {
+    return this.api.exists();
+  }
+
   async close(): Promise<void> {
     // Wait for an open in progress, or the host would appear right after the close.
     await this.opening?.catch(() => {});

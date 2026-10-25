@@ -18,6 +18,12 @@ const client = new PortClient(() => browser.runtime.connect({ name: 'worker-host
 
 const controller = new HostController({
   deliver: (request) => client.request('delivery/deliver', { ...request, saveAs: false }),
+  reportProgress: (jobId, bytesWritten, total) =>
+    client.request('worker/progress', {
+      jobId,
+      bytesWritten,
+      ...(total !== undefined && { total }),
+    }),
   reportFailure: (jobId, error) => client.request('worker/failed', { jobId, error }),
   // An OPFS file has no type, and Chromium then sniffs the content and renames `.bin` to
   // `.txt`. `slice` re-types the file without reading it (it stays a reference).
@@ -52,7 +58,7 @@ const running = new Set<string>();
 worker.onmessage = (event: MessageEvent<unknown>) => {
   const parsed = FromWorkerSchema.safeParse(event.data);
   if (!parsed.success) return;
-  running.delete(parsed.data.jobId);
+  if (parsed.data.type !== 'progress') running.delete(parsed.data.jobId);
   controller.onWorkerMessage(parsed.data).catch((error: unknown) => {
     console.error('[servare] worker result handling failed', error);
   });
@@ -74,6 +80,11 @@ const handlers: Partial<Handlers> = {
     running.add(jobId);
     worker.postMessage({ type: 'start', jobId, url, filename });
     return null;
+  },
+  'worker/cancel': ({ jobId }) => {
+    // The worker removes its file and answers `failed: cancelled`.
+    worker.postMessage({ type: 'cancel', jobId });
+    return Promise.resolve(null);
   },
   'delivery/release': async ({ jobId }) => {
     await controller.release(jobId);

@@ -72,6 +72,7 @@ export class Delivery {
   private readonly store;
   /** Blob URLs this context is still delivering; `recover` must not touch them. */
   private readonly inflight = new Set<string>();
+  private releasing = 0;
 
   constructor(
     private readonly downloads: DownloadsApiLike,
@@ -208,12 +209,28 @@ export class Delivery {
   }
 
   private async finish(downloadId: number, outcome: DeliveryOutcome): Promise<void> {
-    let entry: Pending | undefined;
-    await this.store.update((list) => {
-      entry = list.find((e) => e.downloadId === downloadId);
-      return entry ? list.filter((e) => e !== entry) : list;
-    });
-    if (entry) await this.release(entry.jobId, outcome);
+    // Counted before the entry leaves the store: the host must not be closed in the gap
+    // between the two, or the release would find no host and its OPFS file would be orphaned.
+    this.releasing++;
+    try {
+      let entry: Pending | undefined;
+      await this.store.update((list) => {
+        entry = list.find((e) => e.downloadId === downloadId);
+        return entry ? list.filter((e) => e !== entry) : list;
+      });
+      if (entry) await this.release(entry.jobId, outcome);
+    } finally {
+      this.releasing--;
+    }
+  }
+
+  /**
+   * Finishes between "entry removed from the store" and "release answered". The host must not
+   * be closed for another job in that gap, or the release would find no host and its OPFS file
+   * would be orphaned. The release callback itself counts as one.
+   */
+  get releasesInFlight(): number {
+    return this.releasing;
   }
 
   /** True while any delivery is awaiting `onChanged`; the host must stay open until false. */

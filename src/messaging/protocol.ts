@@ -66,6 +66,20 @@ export const requestSchemas = {
     request: z.object({ jobId: z.string(), error: DownloadErrorSchema }),
     response: z.null(),
   },
+  /** Background → worker host (over `runtime.sendMessage`): stop a job and delete its file. */
+  'worker/cancel': {
+    request: z.object({ jobId: z.string() }),
+    response: z.null(),
+  },
+  /** Worker host → background: bytes written so far (throttled by the worker). */
+  'worker/progress': {
+    request: z.object({
+      jobId: z.string(),
+      bytesWritten: z.number().nonnegative(),
+      total: z.number().positive().optional(),
+    }),
+    response: z.null(),
+  },
   /**
    * TEMPORARY entry point for development and E2E (until #11/#25 provide real enqueueing):
    * saves a single http(s) URL as a direct file. Only extension pages can reach it.
@@ -74,6 +88,8 @@ export const requestSchemas = {
     request: z.object({
       url: z.url({ protocol: /^https?$/ }).max(8192),
       filename: z.string().min(1).max(255),
+      /** Tab whose player headers (Referer, Origin, Cookie) the download replays (§4.1.1). */
+      tabId: z.number().int().optional(),
     }),
     response: z.object({ jobId: z.string() }),
   },

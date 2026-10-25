@@ -64,6 +64,21 @@ describe('Delivery', () => {
     expect(await delivery.hasPending()).toBe(false);
   });
 
+  it('counts a release that is still in flight', async () => {
+    const { delivery, release, fire } = setup();
+    let answer!: () => void;
+    release.mockImplementationOnce(() => new Promise<void>((resolve) => void (answer = resolve)));
+    await delivery.deliver(request);
+    fire({ id: 7, state: { current: 'complete' } });
+    await flush();
+    // The entry is gone from the store, but the host must stay open until release answers.
+    expect(await delivery.hasPending()).toBe(false);
+    expect(delivery.releasesInFlight).toBe(1);
+    answer();
+    await flush();
+    expect(delivery.releasesInFlight).toBe(0);
+  });
+
   it('releases on interruption and ignores unknown downloads', async () => {
     const { delivery, release, fire } = setup();
     await delivery.deliver(request);

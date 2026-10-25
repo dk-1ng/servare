@@ -4,6 +4,7 @@ import { HostController } from './host-controller';
 function setup(deliver = vi.fn(async () => ({ downloadId: 1 }))) {
   const deps = {
     deliver,
+    reportProgress: vi.fn(async () => null),
     reportFailure: vi.fn(async () => null),
     createObjectURL: vi.fn(() => 'blob:abc'),
     revokeObjectURL: vi.fn(),
@@ -70,5 +71,13 @@ describe('HostController', () => {
     await controller.release('old');
     expect(deps.revokeObjectURL).not.toHaveBeenCalled();
     expect(deps.removeJobFile).toHaveBeenCalledWith('old');
+  });
+
+  it('forwards progress and never fails because of it', async () => {
+    const { deps, controller } = setup();
+    deps.reportProgress.mockRejectedValueOnce(new Error('gone'));
+    await controller.onWorkerMessage({ type: 'progress', jobId: 'j1', bytesWritten: 5, total: 10 });
+    expect(deps.reportProgress).toHaveBeenCalledWith('j1', 5, 10);
+    expect(deps.deliver).not.toHaveBeenCalled();
   });
 });

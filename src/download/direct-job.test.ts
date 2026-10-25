@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { QuotaError } from '../media/storage';
-import { JobError, runDirectJob, toDownloadError, type JobWriter } from './direct-job';
+import {
+  JobError,
+  parseRetryAfter,
+  runDirectJob,
+  toDownloadError,
+  type JobWriter,
+} from './direct-job';
 
 function body(...chunks: number[][]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -16,6 +22,7 @@ function setup(response: Response, ensure = vi.fn(async () => {})) {
   const file = new File(['x'], 'f');
   const writer: JobWriter = {
     writeAt: (at, data) => void writes.push([at, [...data]]),
+    truncate: vi.fn(),
     finish: vi.fn(async () => file),
     remove: vi.fn(async () => {}),
   };
@@ -23,6 +30,7 @@ function setup(response: Response, ensure = vi.fn(async () => {})) {
     fetch: vi.fn(async () => response),
     openWriter: vi.fn(async () => writer),
     ensureFreeSpace: ensure,
+    retry: { attempts: 1, baseMs: 1, maxMs: 1 },
   };
   return { deps, writer, writes, file, ensure };
 }
@@ -87,6 +95,160 @@ describe('runDirectJob', () => {
     const error = await runDirectJob(job, s.deps).catch((e: unknown) => e);
     expect(toDownloadError(error)).toEqual({ kind: 'quota' });
     expect(s.writer.remove).toHaveBeenCalled();
+  });
+});
+
+describe('runDirectJob retries', () => {
+  const retry = { attempts: 3, baseMs: 100, maxMs: 1000 };
+  function harness(responses: (Response | Error)[]) {
+    const s = setup(new Response());
+    const calls: { headers?: Record<string, string> }[] = [];
+    const waits: number[] = [];
+    const queue = [...responses];
+    const deps = {
+      ...s.deps,
+      retry,
+      random: () => 1,
+      sleep: vi.fn(async (ms: number) => void waits.push(ms)),
+      fetch: vi.fn(async (_url: string, init: { headers?: Record<string, string> }) => {
+        calls.push(init);
+        const next = queue.shift();
+        if (next instanceof Error) throw next;
+        return next ?? new Response('x', { status: 500 });
+      }),
+    };
+    return { ...s, deps, calls, waits };
+  }
+
+  it('retries a 503 with exponential backoff and then succeeds', async () => {
+    const h = harness([
+      new Response('', { status: 503 }),
+      new Response('', { status: 503 }),
+      new Response(body([1]), { headers: { 'content-length': '1' } }),
+    ]);
+    expect(await runDirectJob(job, h.deps)).toBe(h.file);
+    expect(h.waits).toEqual([100, 200]);
+  });
+
+  it('honors Retry-After on 429, capped by the maximum wait', async () => {
+    const h = harness([
+      new Response('', { status: 429, headers: { 'retry-after': '5' } }),
+      new Response(body([1])),
+    ]);
+    await runDirectJob(job, h.deps);
+    expect(h.waits).toEqual([1000]);
+  });
+
+  it('does not retry a 403', async () => {
+    const h = harness([new Response('', { status: 403 })]);
+    await expect(runDirectJob(job, h.deps)).rejects.toMatchObject({
+      detail: { kind: 'http', status: 403 },
+    });
+    expect(h.deps.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after the last attempt with the last failure', async () => {
+    const h = harness([
+      new Response('', { status: 500 }),
+      new Response('', { status: 500 }),
+      new Response('', { status: 502 }),
+    ]);
+    await expect(runDirectJob(job, h.deps)).rejects.toMatchObject({
+      detail: { kind: 'http', status: 502 },
+    });
+    expect(h.deps.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('resumes a cut body with a Range request', async () => {
+    const h = harness([
+      new Response(body([1, 2]), { headers: { 'content-length': '4', etag: '"v1"' } }),
+      new Response(body([3, 4]), {
+        status: 206,
+        headers: { 'content-range': 'bytes 2-3/4' },
+      }),
+    ]);
+    await runDirectJob(job, h.deps);
+    expect(h.calls[1]?.headers).toEqual({ Range: 'bytes=2-', 'If-Range': '"v1"' });
+    expect(h.writes).toEqual([
+      [0, [1, 2]],
+      [2, [3, 4]],
+    ]);
+  });
+
+  it('starts over without a Range request when the file has no validator', async () => {
+    const h = harness([
+      new Response(body([1, 2]), { headers: { 'content-length': '4' } }),
+      new Response(body([1, 2, 3, 4]), { headers: { 'content-length': '4' } }),
+    ]);
+    await runDirectJob(job, h.deps);
+    expect(h.calls[1]?.headers).toEqual({});
+    expect(h.writer.truncate).toHaveBeenCalledWith(0);
+  });
+
+  it('uses Last-Modified as the validator and rejects a range of a different size', async () => {
+    const h = harness([
+      new Response(body([1, 2]), {
+        headers: { 'content-length': '4', 'last-modified': 'Thu, 01 Jan 1970 00:00:10 GMT' },
+      }),
+      new Response(body([9, 9, 9]), { status: 206, headers: { 'content-range': 'bytes 2-4/5' } }),
+      new Response(body([1, 2, 3, 4]), { headers: { 'content-length': '4' } }),
+    ]);
+    await runDirectJob(job, h.deps);
+    expect(h.calls[1]?.headers?.['If-Range']).toBe('Thu, 01 Jan 1970 00:00:10 GMT');
+    expect(h.writer.truncate).toHaveBeenCalledWith(0);
+  });
+
+  it('starts over when the server ignores the range', async () => {
+    const h = harness([
+      new Response(body([1, 2]), { headers: { 'content-length': '4' } }),
+      new Response(body([1, 2, 3, 4]), { headers: { 'content-length': '4' } }),
+    ]);
+    await runDirectJob(job, h.deps);
+    expect(h.writer.truncate).toHaveBeenCalledWith(0);
+    expect(h.writes.at(-1)).toEqual([0, [1, 2, 3, 4]]);
+  });
+
+  it('cancels during a backoff wait and removes the file', async () => {
+    const h = harness([new Response(body([1]), { headers: { 'content-length': '4' } })]);
+    const controller = new AbortController();
+    h.deps.sleep = vi.fn(async () => {
+      controller.abort();
+      throw new JobError({ kind: 'cancelled' });
+    });
+    const error = await runDirectJob(job, h.deps, controller.signal).catch((e: unknown) => e);
+    expect(toDownloadError(error)).toEqual({ kind: 'cancelled' });
+    expect(h.writer.remove).toHaveBeenCalled();
+  });
+
+  it('cancels a fetch that rejects because of the abort', async () => {
+    const h = harness([]);
+    const controller = new AbortController();
+    h.deps.fetch = vi.fn(async () => {
+      controller.abort();
+      throw new DOMException('aborted', 'AbortError');
+    });
+    const error = await runDirectJob(job, h.deps, controller.signal).catch((e: unknown) => e);
+    expect(toDownloadError(error)).toEqual({ kind: 'cancelled' });
+    expect(h.deps.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports progress as bytes arrive', async () => {
+    const h = harness([new Response(body([1, 2], [3]), { headers: { 'content-length': '3' } })]);
+    const onProgress = vi.fn();
+    await runDirectJob(job, { ...h.deps, onProgress });
+    expect(onProgress.mock.calls).toEqual([
+      [2, 3],
+      [3, 3],
+    ]);
+  });
+});
+
+describe('parseRetryAfter', () => {
+  it('reads seconds and dates', () => {
+    expect(parseRetryAfter('3')).toBe(3000);
+    expect(parseRetryAfter('Thu, 01 Jan 1970 00:00:10 GMT', 4000)).toBe(6000);
+    expect(parseRetryAfter(null)).toBeUndefined();
+    expect(parseRetryAfter('soon')).toBeUndefined();
   });
 });
 
