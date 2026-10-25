@@ -99,8 +99,8 @@ describe('sanitizeSubfolder', () => {
   });
 
   it('does not leave trailing spaces or dots after truncation', () => {
-    expect(sanitizeSubfolder('a'.repeat(178) + ' b')).toBe('a'.repeat(178));
-    expect(sanitizeSubfolder('a'.repeat(178) + '.b')).toBe('a'.repeat(178));
+    expect(sanitizeSubfolder('a'.repeat(179) + ' b')).toBe('a'.repeat(179));
+    expect(sanitizeSubfolder('a'.repeat(179) + '.b')).toBe('a'.repeat(179));
   });
 
   it('keeps the byte cap when a reserved segment gets its prefix', () => {
