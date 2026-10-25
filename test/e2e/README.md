@@ -22,6 +22,9 @@ What it checks, per browser (issue #6):
 5. Cancelling a running protected download removes its header rules and the temporary file.
 6. The temporary popup (issue #16) lists the file detected on a player tab, downloads it with one
    click, and its Cancel button stops a running job.
+7. The per-tab list (issue #56): two tokenized URLs for the same media yield one item in
+   `storage.session` (`detection.tabs`) holding the latest token; navigating the tab empties
+   its list; closing the tab removes its entry.
 
 How it works: `puppeteer-core` (no bundled browser) drives Chromium over CDP and Firefox over
 WebDriver BiDi, with isolated temporary profiles and download directories under the OS temp

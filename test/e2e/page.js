@@ -72,6 +72,11 @@ globalThis.e2e = {
     const read = async (area) => (await area.get('direct.failures'))['direct.failures']?.data ?? [];
     return [...(await read(api.storage.local)), ...(await read(api.storage.session))];
   },
+  /** The raw per-tab media list mirrored to storage.session ({ [tabId]: { page, entries } }). */
+  async tabList() {
+    // Stored by the state layer as { v, data }.
+    return (await api.storage.session.get('detection.tabs'))['detection.tabs']?.data ?? {};
+  },
   /** Names of the files in OPFS `servare-tmp`; `null` when the directory does not exist. */
   async opfs() {
     const root = await navigator.storage.getDirectory();
