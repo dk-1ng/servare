@@ -39,6 +39,8 @@ export interface Entry {
   /** From the latest detection: which document asked for it (design §3.5). */
   documentId?: string | undefined;
   parentDocumentId?: string | undefined;
+  /** The latest detection was a top-frame navigation response (`main_frame`). */
+  navigation?: boolean | undefined;
 }
 
 /** A top-frame `webNavigation.onCommitted`. */
@@ -61,6 +63,11 @@ interface TabDocuments {
   frames: Set<string>;
   /** Documents the tab has navigated away from, oldest first. */
   retired: string[];
+  /**
+   * The frames retired with each retired top document, so a back/forward cache restore (which
+   * does not announce its frames again) brings them back. Only IDs still in `retired` are kept.
+   */
+  retiredFrames: Map<string, string[]>;
   /** Top-frame commits seen, and the URL of the latest. */
   commits: number;
   url: string;
@@ -113,9 +120,9 @@ const HTTP_URL = /^https?:/;
  */
 export function pageUrlFor(tabUrl: string | undefined, media: DetectedMedia): string | undefined {
   if (tabUrl !== undefined && HTTP_URL.test(tabUrl)) return tabUrl;
-  const navigation =
-    media.frameId === 0 && media.documentId === undefined && media.parentDocumentId === undefined;
-  return navigation && HTTP_URL.test(media.url) ? media.url : undefined;
+  return media.navigation === true && media.frameId === 0 && HTTP_URL.test(media.url)
+    ? media.url
+    : undefined;
 }
 
 /** Hides what is probably a fragment while the tab has a manifest (design §3.5). */
@@ -227,6 +234,7 @@ export class TabMediaList {
                   // media on the next page must survive that page's commit.
                   documentId: media.documentId,
                   parentDocumentId: media.parentDocumentId,
+                  navigation: media.navigation,
                   mime: media.mime ?? entry.mime,
                   size: media.size ?? entry.size,
                   resumable: media.resumable || entry.resumable,
@@ -247,6 +255,7 @@ export class TabMediaList {
               detectedAt: media.detectedAt,
               documentId: media.documentId,
               parentDocumentId: media.parentDocumentId,
+              navigation: media.navigation,
             },
           ];
       // A failed metadata read must not erase a thumbnail found earlier.
@@ -273,6 +282,9 @@ export class TabMediaList {
   noteFrame(tabId: number, documentId: string | undefined): void {
     const docs = this.documents.get(tabId);
     if (documentId === undefined || !docs || documentId === docs.top) return;
+    // A frame committing under the current top document is current, whatever it was before.
+    const at = docs.retired.indexOf(documentId);
+    if (at !== -1) docs.retired.splice(at, 1);
     docs.frames.delete(documentId);
     docs.frames.add(documentId);
     // Only frames are capped: the top document is kept apart and always retired.
@@ -292,6 +304,16 @@ export class TabMediaList {
     }
     if (docs.retired.length > MAX_RETIRED_DOCUMENTS) {
       docs.retired.splice(0, docs.retired.length - MAX_RETIRED_DOCUMENTS);
+      // The map only names retired IDs, so it shares the cap.
+      const still = new Set(docs.retired);
+      for (const [top, frames] of docs.retiredFrames) {
+        if (still.has(top))
+          docs.retiredFrames.set(
+            top,
+            frames.filter((id) => still.has(id)),
+          );
+        else docs.retiredFrames.delete(top);
+      }
     }
   }
 
@@ -304,16 +326,29 @@ export class TabMediaList {
    */
   async commit({ tabId, url, documentId }: Commit): Promise<boolean> {
     const previous = this.documents.get(tabId);
+    const retiredFrames = new Map(previous?.retiredFrames);
+    // Back/forward cache: a restored document is current again, and so are its frames.
+    const restored = new Set(documentId === undefined ? [] : retiredFrames.get(documentId));
+    if (documentId !== undefined) retiredFrames.delete(documentId);
     const docs: TabDocuments = {
       top: documentId,
-      frames: new Set(),
-      // Back/forward cache: a restored document is current again.
-      retired: (previous?.retired ?? []).filter((id) => id !== documentId),
+      frames: restored,
+      retired: (previous?.retired ?? []).filter((id) => id !== documentId && !restored.has(id)),
+      retiredFrames,
       commits: (previous?.commits ?? 0) + 1,
       url,
     };
+    const left = previous?.top;
+    const leftFrames = [...(previous?.frames ?? [])];
     // The previous top document goes last, after its frames.
-    this.retire(docs, [...(previous?.frames ?? []), previous?.top], documentId);
+    this.retire(docs, [...leftFrames, left], documentId);
+    if (left !== undefined && left !== documentId) {
+      const still = new Set(docs.retired);
+      docs.retiredFrames.set(
+        left,
+        leftFrames.filter((id) => still.has(id)),
+      );
+    }
     this.documents.set(tabId, docs);
     /** Dropped entries come from storage too, so they still name the documents after a wake-up. */
     const retireDropped = (state: TabState, kept: readonly Entry[]): void => {
@@ -333,13 +368,8 @@ export class TabMediaList {
       if (documentId !== undefined) {
         if (entry.documentId === documentId || entry.parentDocumentId === documentId) return true;
       }
-      // A navigation response has no document yet; in the top frame it is the page itself.
-      return (
-        entry.documentId === undefined &&
-        entry.parentDocumentId === undefined &&
-        entry.frameId === 0 &&
-        entry.key === key
-      );
+      // A top-frame navigation response has no document yet: it is the page itself.
+      return entry.navigation === true && entry.frameId === 0 && entry.key === key;
     };
     /** `undefined` when nothing is left; the same object when nothing changed. */
     const prune = (state: TabState): TabState | undefined => {

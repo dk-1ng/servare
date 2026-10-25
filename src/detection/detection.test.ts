@@ -376,6 +376,9 @@ describe('observer', () => {
     expect(found[0]).toMatchObject({ documentId: 'D1', parentDocumentId: 'P1' });
     expect(found[1]).not.toHaveProperty('documentId');
     expect(found[1]).not.toHaveProperty('parentDocumentId');
+    expect(found[1]).not.toHaveProperty('navigation');
+    observer.onResponseStarted(mp4({ type: 'main_frame', url: 'https://cdn.example.com/t.mp4' }));
+    expect(found[2]).toMatchObject({ navigation: true });
   });
 
   it('skips own requests (by initiator), tabless requests and non-HTTP schemes', () => {

@@ -20,6 +20,8 @@ export interface DetectedMedia {
   documentId?: string;
   /** The parent of the requesting document, or of the frame being navigated. */
   parentDocumentId?: string;
+  /** A top-level navigation response (`main_frame`): the tab is loading the media itself. */
+  navigation?: true;
 }
 
 interface HeaderPair {
@@ -142,6 +144,7 @@ export function createObserver(options: ObserverOptions) {
         ...(typeof details.parentDocumentId === 'string' && {
           parentDocumentId: details.parentDocumentId,
         }),
+        ...(details.type === 'main_frame' && { navigation: true as const }),
       });
     },
   };

@@ -225,7 +225,7 @@ describe('TabMediaList document tracking (design §3.5)', () => {
 
   it('keeps a media file opened in the tab, whatever the order of response and commit', async () => {
     const url = 'https://c.com/top.mp4?token=x';
-    const navigation = media({ url });
+    const navigation = media({ url, navigation: true });
     const before = setup();
     await before.list.add(navigation, page, false);
     await before.list.commit({ tabId: 1, url, documentId: 'M' });
@@ -304,13 +304,45 @@ describe('TabMediaList document tracking (design §3.5)', () => {
   });
 
   it('uses a navigation response as the page while the tab reports about:blank', () => {
-    const top = media({ url: 'https://c.com/top.mp4' });
+    const top = media({ url: 'https://c.com/top.mp4', navigation: true });
     expect(pageUrlFor('https://example.com/a', top)).toBe('https://example.com/a');
     expect(pageUrlFor('about:blank', top)).toBe('https://c.com/top.mp4');
     expect(pageUrlFor(undefined, top)).toBe('https://c.com/top.mp4');
-    expect(pageUrlFor('about:blank', media({ documentId: 'A' }))).toBeUndefined();
-    expect(pageUrlFor('about:blank', media({ frameId: 5 }))).toBeUndefined();
-    expect(pageUrlFor('about:blank', media({ parentDocumentId: 'A' }))).toBeUndefined();
+    // A subresource without document IDs (Firefox before 153, keepalive), e.g. on a file: page.
+    expect(pageUrlFor('file:///home/a.html', media())).toBeUndefined();
+    expect(pageUrlFor('about:blank', media({ navigation: true, frameId: 5 }))).toBeUndefined();
+  });
+
+  it('keeps a subresource with the committed URL out of the navigation rule', async () => {
+    const { list } = setup();
+    await list.add(media({ url: next }), page, false);
+    await list.commit({ tabId: 1, url: next });
+    expect(await list.items(1)).toEqual([]);
+  });
+
+  it('brings back the frames of a document restored from the back/forward cache', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    list.noteFrame(1, 'F');
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    await list.add(media({ documentId: 'F' }), page, false);
+    await list.add(media({ url: 'https://c.com/g.mp4', parentDocumentId: 'F' }), page, false);
+    expect(await list.items(1)).toHaveLength(2);
+    // Leaving again retires them again.
+    await list.commit({ tabId: 1, url: next, documentId: 'C' });
+    await list.add(media({ url: 'https://c.com/h.mp4', documentId: 'F' }), page, false);
+    expect(await list.items(1)).toEqual([]);
+  });
+
+  it('treats a frame committing under the current page as current', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    list.noteFrame(1, 'F');
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    list.noteFrame(1, 'F');
+    await list.add(media({ documentId: 'F' }), page, false);
+    expect(await list.items(1)).toHaveLength(1);
   });
 
   it('forgets the documents of a closed tab', async () => {
