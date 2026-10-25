@@ -21,7 +21,10 @@ const FIREFOX_UUID = '5f0c1c0e-2b0a-4f5e-9d3e-0a1b2c3d4e5f';
 type Target = 'chromium' | 'firefox';
 
 interface E2eApi {
-  start(url: string, filename: string): Promise<{ jobId: string }>;
+  start(url: string, filename: string, tabId?: number): Promise<{ jobId: string }>;
+  cancel(jobId: string): Promise<null>;
+  rules(): Promise<number[]>;
+  tabId(prefix: string): Promise<number | undefined>;
   failures(): Promise<{ jobId: string; error: { kind: string; message: string } }[]>;
   opfs(): Promise<string[] | null>;
   hosts(): Promise<number>;
@@ -224,7 +227,7 @@ async function runTarget(target: Target, origin: string): Promise<void> {
       const left = await call('opfs');
       assert(
         left === null || left.length === 0,
-        `${what}: OPFS servare-tmp not empty: ${JSON.stringify(left)}`,
+        `${what}: OPFS servare-tmp not empty: ${JSON.stringify(left)} hosts=${await call('hosts')} failures=${JSON.stringify(await call('failures'))} downloads=${JSON.stringify(await call('downloads'))}`,
       );
     };
 
@@ -318,6 +321,82 @@ async function runTarget(target: Target, origin: string): Promise<void> {
     log.push(
       '  ok   two concurrent jobs completed; never more than one worker host; closed afterwards',
     );
+
+    // 4. Header replay: a Referer + cookie protected file downloads only with the player's headers.
+    const player = await browser.newPage();
+    await player.goto(`${origin}/set-cookie`);
+    await player.goto(`${origin}/pages/index.html`);
+    // The player's own request is what the extension captures (Referer = this page, session cookie).
+    const status = await player.evaluate(
+      async () => (await fetch('/guarded/media/sample.mp4', { credentials: 'include' })).status,
+    );
+    assert(status === 200, `the player could not fetch the guarded file: ${status}`);
+    const playerTab = await until('player tab id', 10000, async () =>
+      call('tabId', `${origin}/pages/`),
+    );
+    const sampleSize = (await stat(path.join(ROOT, 'test/fixtures/out/sample.mp4'))).size;
+
+    const { jobId: bareId } = await call(
+      'start',
+      `${origin}/guarded/media/sample.mp4`,
+      'servare-bare.mp4',
+    );
+    const refused = await until('refused without headers', 60000, async () =>
+      (await call('failures')).find((f) => f.jobId === bareId),
+    );
+    assert(
+      JSON.stringify(refused.error) === JSON.stringify({ kind: 'http', status: 403 }),
+      `expected http 403 without the player's headers, got ${JSON.stringify(refused.error)}`,
+    );
+    await waitClosedAndClean('after the refused guarded job');
+
+    await call('start', `${origin}/guarded/media/sample.mp4`, 'servare-guarded.mp4', playerTab);
+    await until(
+      'guarded download complete',
+      60000,
+      async () =>
+        (await call('downloads')).find(
+          (d) => d.filename.endsWith('servare-guarded.mp4') && d.state === 'complete',
+        ),
+      sampleHosts,
+    );
+    assert(
+      (await stat(path.join(downloads, 'servare-guarded.mp4'))).size === sampleSize,
+      'guarded file has the wrong size',
+    );
+    await waitClosedAndClean('after the guarded job');
+    assert((await call('rules')).length === 0, 'header rules left after the guarded job');
+    log.push(
+      '  ok   guarded MP4 refused without headers, saved with the player headers, rules gone',
+    );
+
+    // 5. Cancelling removes the rules and the temporary file.
+    const { jobId: cancelId } = await call(
+      'start',
+      `${origin}/guarded/synthetic/2gb.bin?pace=10`,
+      'servare-cancel.bin',
+      playerTab,
+    );
+    await until('rules installed and bytes flowing', 60000, async () => {
+      const left = await call('opfs');
+      const rules = await call('rules');
+      log.push(
+        `  ... rules=${JSON.stringify(rules)} opfs=${JSON.stringify(left)} failures=${JSON.stringify(await call('failures'))}`,
+      );
+      return rules.length > 0 && (left?.length ?? 0) > 0 ? true : undefined;
+    });
+    await call('cancel', cancelId);
+    const cancelled = await until('cancellation reported', 60000, async () =>
+      (await call('failures')).find((f) => f.jobId === cancelId),
+    );
+    assert(cancelled.error.kind === 'cancelled', `expected cancelled, got ${cancelled.error.kind}`);
+    assert((await call('rules')).length === 0, 'header rules left after cancelling');
+    await waitClosedAndClean('after cancelling');
+    assert(
+      !(await readdir(downloads)).some((f) => f.includes('cancel')),
+      'a file was saved for the cancelled job',
+    );
+    log.push('  ok   cancelled job: rules removed, OPFS empty, nothing saved');
   } finally {
     await browser.close().catch(() => undefined);
     if (process.env['E2E_KEEP']) console.info(`  kept ${work}`);

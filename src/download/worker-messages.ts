@@ -5,24 +5,19 @@ import type { DownloadError } from '../messaging/schemas';
  * stays small and avoids zod's `new Function` probe (flagged by `web-ext lint`).
  * The host validates what comes back with `FromWorkerSchema` in `worker-protocol.ts`.
  */
-export interface ToWorker {
-  type: 'start';
-  jobId: string;
-  url: string;
-  filename: string;
-}
+export type ToWorker =
+  | { type: 'start'; jobId: string; url: string; filename: string }
+  | { type: 'cancel'; jobId: string };
 
 export type FromWorker =
   | { type: 'done'; jobId: string; filename: string; file: Blob }
-  | { type: 'failed'; jobId: string; error: DownloadError };
+  | { type: 'failed'; jobId: string; error: DownloadError }
+  | { type: 'progress'; jobId: string; bytesWritten: number; total?: number | undefined };
 
 export function isToWorker(value: unknown): value is ToWorker {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  return (
-    v.type === 'start' &&
-    typeof v.jobId === 'string' &&
-    typeof v.url === 'string' &&
-    typeof v.filename === 'string'
-  );
+  if (typeof v.jobId !== 'string') return false;
+  if (v.type === 'cancel') return true;
+  return v.type === 'start' && typeof v.url === 'string' && typeof v.filename === 'string';
 }

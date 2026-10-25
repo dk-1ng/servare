@@ -72,11 +72,14 @@ export class Delivery {
   private readonly store;
   /** Blob URLs this context is still delivering; `recover` must not touch them. */
   private readonly inflight = new Set<string>();
+  private releasing = 0;
 
   constructor(
     private readonly downloads: DownloadsApiLike,
     area: StorageAreaLike,
     private readonly release: (jobId: string, outcome: DeliveryOutcome) => Promise<void>,
+    /** Called after every release, once it no longer counts as in flight (success or not). */
+    private readonly onReleased: () => Promise<void> = async () => {},
   ) {
     this.store = createStore({
       area,
@@ -198,8 +201,15 @@ export class Delivery {
           );
           await this.catchUp(item.id);
         } else if (Date.now() - entry.createdAt > STALE_AFTER_MS) {
-          await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
-          await this.release(entry.jobId, 'interrupted');
+          // Counted before the entry leaves the store, as in `finish`.
+          this.releasing++;
+          try {
+            await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
+          } catch (error) {
+            this.releasing--;
+            throw error;
+          }
+          await this.runRelease(entry.jobId, 'interrupted');
         }
       } catch (error) {
         console.error('[servare] delivery recovery failed for one entry', error);
@@ -209,11 +219,42 @@ export class Delivery {
 
   private async finish(downloadId: number, outcome: DeliveryOutcome): Promise<void> {
     let entry: Pending | undefined;
-    await this.store.update((list) => {
-      entry = list.find((e) => e.downloadId === downloadId);
-      return entry ? list.filter((e) => e !== entry) : list;
-    });
-    if (entry) await this.release(entry.jobId, outcome);
+    // Counted before the entry leaves the store: the host must not be closed in the gap
+    // between the two, or the release would find no host and its OPFS file would be orphaned.
+    this.releasing++;
+    try {
+      await this.store.update((list) => {
+        entry = list.find((e) => e.downloadId === downloadId);
+        return entry ? list.filter((e) => e !== entry) : list;
+      });
+    } catch (error) {
+      this.releasing--;
+      throw error;
+    }
+    if (entry) await this.runRelease(entry.jobId, outcome);
+    else this.releasing--;
+  }
+
+  /** Releases an entry already out of the store; the caller has raised `releasing`. */
+  private async runRelease(jobId: string, outcome: DeliveryOutcome): Promise<void> {
+    try {
+      await this.release(jobId, outcome);
+    } finally {
+      this.releasing--;
+      // After the decrement, so the last of several overlapping releases always sees zero.
+      await this.onReleased().catch((error: unknown) => {
+        console.error('[servare] post-release hook failed', error);
+      });
+    }
+  }
+
+  /**
+   * Finishes between "entry removed from the store" and "release answered". The host must not
+   * be closed in that gap, or the release would find no host and its OPFS file would be
+   * orphaned.
+   */
+  get releasesInFlight(): number {
+    return this.releasing;
   }
 
   /** True while any delivery is awaiting `onChanged`; the host must stay open until false. */

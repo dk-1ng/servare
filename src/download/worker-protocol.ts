@@ -13,4 +13,10 @@ export const FromWorkerSchema = z.discriminatedUnion('type', [
     file: z.instanceof(Blob),
   }),
   z.object({ type: z.literal('failed'), jobId: z.string(), error: DownloadErrorSchema }),
+  z.object({
+    type: z.literal('progress'),
+    jobId: z.string(),
+    bytesWritten: z.number().nonnegative(),
+    total: z.number().positive().optional(),
+  }),
 ]);

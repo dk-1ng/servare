@@ -8,7 +8,7 @@ function connect() {
 
 globalThis.e2e = {
   /** Sends the temporary 'download/start-direct' request over a port; resolves with {jobId}. */
-  start(url, filename) {
+  start(url, filename, tabId) {
     return new Promise((resolve, reject) => {
       const port = connect();
       const timer = setTimeout(() => reject(new Error('no response to start-direct')), 30000);
@@ -23,9 +23,33 @@ globalThis.e2e = {
         kind: 'request',
         id: '1',
         name: 'download/start-direct',
-        payload: { url, filename },
+        payload: { url, filename, ...(tabId !== undefined && { tabId }) },
       });
     });
+  },
+  /** Sends 'download/cancel' for a job. */
+  cancel(jobId) {
+    return new Promise((resolve, reject) => {
+      const port = connect();
+      const timer = setTimeout(() => reject(new Error('no response to cancel')), 30000);
+      port.onMessage.addListener((message) => {
+        if (message.kind !== 'response' || message.id !== '2') return;
+        clearTimeout(timer);
+        port.disconnect();
+        if (message.ok === false) reject(new Error(JSON.stringify(message)));
+        else resolve(null);
+      });
+      port.postMessage({ kind: 'request', id: '2', name: 'download/cancel', payload: { jobId } });
+    });
+  },
+  /** IDs of the session rules currently installed (header replay uses 1000000+). */
+  async rules() {
+    return (await api.declarativeNetRequest.getSessionRules()).map((r) => r.id);
+  },
+  /** ID of the first tab whose URL starts with `prefix`. */
+  async tabId(prefix) {
+    const tabs = await api.tabs.query({});
+    return tabs.find((t) => (t.url ?? '').startsWith(prefix))?.id;
   },
   async failures() {
     // Stored by the state layer as { v, data }.

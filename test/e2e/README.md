@@ -17,6 +17,9 @@ What it checks, per browser (issue #6):
 2. After success, and after a failed job (`?abortAfter=N`), the worker host is closed and the
    OPFS directory `servare-tmp` is empty or absent; a failed job saves nothing.
 3. Two concurrent jobs share one worker host (never more than one at a time) and it closes.
+4. A file protected by `Referer` + cookie is refused (`http 403`) without the player's headers and
+   saved with them; no header rules are left afterwards (issue #11).
+5. Cancelling a running protected download removes its header rules and the temporary file.
 
 How it works: `puppeteer-core` (no bundled browser) drives Chromium over CDP and Firefox over
 WebDriver BiDi, with isolated temporary profiles and download directories under the OS temp

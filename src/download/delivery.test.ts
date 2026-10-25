@@ -22,11 +22,15 @@ function setup() {
     onDeterminingFilename: { addListener: (cb) => (determining = cb) },
   };
   const release = vi.fn(async () => {});
-  const delivery = new Delivery(downloads, area, release);
+  const inFlightAtHook: number[] = [];
+  const delivery: Delivery = new Delivery(downloads, area, release, async () => {
+    inFlightAtHook.push(delivery.releasesInFlight);
+  });
   delivery.listen();
   /** A fresh instance over the same storage: the background after a suspend or restart. */
   const restart = () => new Delivery(downloads, area, release);
   return {
+    inFlightAtHook,
     delivery,
     restart,
     downloads,
@@ -62,6 +66,40 @@ describe('Delivery', () => {
     await flush();
     expect(release).toHaveBeenCalledWith('j1', 'complete');
     expect(await delivery.hasPending()).toBe(false);
+  });
+
+  it('counts a release that is still in flight', async () => {
+    const { delivery, release, fire } = setup();
+    let answer!: () => void;
+    release.mockImplementationOnce(() => new Promise<void>((resolve) => void (answer = resolve)));
+    await delivery.deliver(request);
+    fire({ id: 7, state: { current: 'complete' } });
+    await flush();
+    // The entry is gone from the store, but the host must stay open until release answers.
+    expect(await delivery.hasPending()).toBe(false);
+    expect(delivery.releasesInFlight).toBe(1);
+    answer();
+    await flush();
+    expect(delivery.releasesInFlight).toBe(0);
+  });
+
+  it('runs the hook after each release with the counter already lowered', async () => {
+    const { delivery, release, fire, downloads, inFlightAtHook } = setup();
+    vi.mocked(downloads.download).mockResolvedValueOnce(7).mockResolvedValueOnce(8);
+    const answers: (() => void)[] = [];
+    release.mockImplementation(() => new Promise<void>((resolve) => void answers.push(resolve)));
+    await delivery.deliver(request);
+    await delivery.deliver({ ...request, jobId: 'j2', blobUrl: 'blob:y' });
+    fire({ id: 7, state: { current: 'complete' } });
+    fire({ id: 8, state: { current: 'complete' } });
+    await flush();
+    expect(delivery.releasesInFlight).toBe(2);
+    answers[0]?.();
+    await flush();
+    answers[1]?.();
+    await flush();
+    // The first hook still sees the other release; the last one sees none and may close the host.
+    expect(inFlightAtHook).toEqual([1, 0]);
   });
 
   it('releases on interruption and ignores unknown downloads', async () => {
