@@ -44,10 +44,23 @@ const delivery = new Delivery(browser.downloads, localArea, async (jobId, outcom
   }
 });
 
+/**
+ * Serializes host lifecycle steps ("add job + open + start" and "check idle + close"), so a
+ * job that starts while the host is being closed cannot lose its host.
+ */
+let lifecycle: Promise<unknown> = Promise.resolve();
+function exclusive<T>(task: () => Promise<T>): Promise<T> {
+  const run = lifecycle.then(task, task);
+  lifecycle = run.catch(() => undefined);
+  return run;
+}
+
 /** The host stays open while a job runs or a blob URL is still being downloaded. */
-async function closeHostWhenIdle(): Promise<void> {
-  if ((await runningStore.get()).length > 0 || (await delivery.hasPending())) return;
-  await workerHost.close();
+function closeHostWhenIdle(): Promise<void> {
+  return exclusive(async () => {
+    if ((await runningStore.get()).length > 0 || (await delivery.hasPending())) return;
+    await workerHost.close();
+  });
 }
 
 function settle(jobId: string): void {
@@ -63,16 +76,18 @@ const handlers: Partial<Handlers> = {
   // Temporary development/E2E trigger; see 'download/start-direct' in the protocol.
   'download/start-direct': async ({ url, filename }) => {
     const jobId = crypto.randomUUID();
-    await runningStore.update((list) => [...list, jobId]);
     try {
-      await workerHost.ensure();
-      // A host that was just created needs a moment before it listens.
-      await requestOverRuntime(
-        browser.runtime,
-        'worker/start',
-        { jobId, url, filename },
-        { retries: 25, delay: 200 },
-      );
+      await exclusive(async () => {
+        await runningStore.update((list) => [...list, jobId]);
+        await workerHost.ensure();
+        // A host that was just created needs a moment before it listens.
+        await requestOverRuntime(
+          browser.runtime,
+          'worker/start',
+          { jobId, url, filename },
+          { retries: 25, delay: 200 },
+        );
+      });
     } catch (error) {
       settle(jobId);
       throw error;
@@ -80,11 +95,11 @@ const handlers: Partial<Handlers> = {
     return { jobId };
   },
   'delivery/deliver': async (request) => {
-    try {
-      return { downloadId: await delivery.deliver(request) };
-    } finally {
-      settle(request.jobId);
-    }
+    // On failure the host cleans up and reports `worker/failed`, which settles the job; closing
+    // the host here could cut that cleanup short.
+    const downloadId = await delivery.deliver(request);
+    settle(request.jobId);
+    return { downloadId };
   },
   'worker/failed': async ({ jobId, error }) => {
     await failuresStore.update((list) => [...list, { jobId, error }].slice(-20));

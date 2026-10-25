@@ -59,10 +59,7 @@ async function prepareExtension(target: Target, work: string): Promise<string> {
   }
   const dest = path.join(work, `ext-${target}`);
   await cp(source, dest, { recursive: true });
-  for (const file of ['page.html', 'page.js']) {
-    await cp(path.join(ROOT, 'test/e2e', file), path.join(dest, `e2e-${file}`));
-  }
-  await cp(path.join(dest, 'e2e-page.html'), path.join(dest, 'e2e.html'));
+  await cp(path.join(ROOT, 'test/e2e/page.js'), path.join(dest, 'e2e-page.js'));
   await writeFile(
     path.join(dest, 'e2e.html'),
     '<!doctype html><meta charset="utf-8"><title>Servare E2E</title><script src="e2e-page.js"></script>',
@@ -272,7 +269,8 @@ async function runTarget(target: Target, origin: string): Promise<void> {
     // 2. A truncated source fails the job and leaves nothing behind.
     const { jobId: failedId } = await call(
       'start',
-      `${origin}/synthetic/2gb.bin?abortAfter=50000000`,
+      // Small enough to pass the quota check everywhere, so the cut itself is what fails.
+      `${origin}/synthetic/64mb.bin?abortAfter=10000000`,
       'servare-e2e-cut.bin',
     );
     const failure = await until(
@@ -281,6 +279,7 @@ async function runTarget(target: Target, origin: string): Promise<void> {
       async () => (await call('failures')).find((f) => f.jobId === failedId),
       sampleHosts,
     );
+    assert(failure.error.kind !== 'quota', 'the truncated job failed on quota, not on the cut');
     await waitClosedAndClean('after failure');
     const files = await readdir(downloads);
     assert(
