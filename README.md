@@ -34,8 +34,6 @@ pnpm test           # unit tests
 pnpm build          # production packages for both browsers
 ```
 
-> These commands become available with the project scaffold (milestone M0).
-
 Technical documentation: [docs/design.md](docs/design.md). How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Legal notice
