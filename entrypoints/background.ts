@@ -5,6 +5,9 @@ import { createWorkerHost } from '@/src/platform/worker-host';
 import { platform } from '@/src/platform';
 import { HeaderCache, type HeaderEntry } from '@/src/detection/header-cache';
 import { createObserver, type DetectedMedia } from '@/src/detection/observer';
+import { READ_PAGE_META, type PageMeta } from '@/src/detection/page-meta';
+import { PageMetaSchema } from '@/src/detection/page-meta-schema';
+import { TabMediaList, type ListState } from '@/src/detection/tab-list';
 import { registerObserver } from '@/src/detection/register';
 import { createStore, localArea, sessionArea } from '@/src/state';
 import {
@@ -52,27 +55,72 @@ const headerCache = new HeaderCache({
   restore: () => headerStore.get(),
 });
 
-/**
- * TEMPORARY, until the per-tab list (#10): the latest detections, so a test can read them from
- * `storage.session` (key `detection.recent`). Newest last, capped.
- */
-const recentStore = createStore({
+const listStore = createStore({
   area: sessionArea,
-  key: 'detection.recent',
-  schema: z.array(z.custom<DetectedMedia>()),
+  key: 'detection.tabs',
+  schema: z.custom<ListState>(),
   version: 1,
-  defaults: (): DetectedMedia[] => [],
+  defaults: (): ListState => ({}),
 });
+
+const tabList = new TabMediaList({ store: listStore });
+
+/** Set in `main`; events are dropped while no UI is connected. */
+let server: PortServer | undefined;
+
+async function publish(tabId: number): Promise<void> {
+  server?.emit('media/updated', { tabId, items: await tabList.items(tabId) });
+}
+
+function logFailure(what: string): (error: unknown) => void {
+  return (error) => {
+    console.error(`[servare] could not ${what}`, error);
+  };
+}
+
+/** Title and thumbnail from the top frame's content script; absent on pages it cannot run in. */
+async function readPageMeta(tabId: number): Promise<PageMeta> {
+  try {
+    const reply: unknown = await browser.tabs.sendMessage(
+      tabId,
+      { type: READ_PAGE_META },
+      { frameId: 0 },
+    );
+    const parsed = PageMetaSchema.safeParse(reply);
+    return parsed.success ? parsed.data : {};
+  } catch {
+    return {};
+  }
+}
+
+async function recordDetection(media: DetectedMedia): Promise<void> {
+  const generation = tabList.generation(media.tabId);
+  const tab = await browser.tabs.get(media.tabId);
+  // The MediaItem contract only carries http(s) page URLs.
+  if (!tab.url || !/^https?:/.test(tab.url)) return;
+  const meta = await readPageMeta(media.tabId);
+  await tabList.add(
+    media,
+    {
+      pageUrl: tab.url,
+      title: meta.title ?? tab.title,
+      thumbnail: meta.thumbnail,
+    },
+    tab.incognito,
+    generation,
+  );
+  await publish(media.tabId);
+}
+
+async function dropTab(tabId: number): Promise<void> {
+  if (await tabList.clear(tabId)) await publish(tabId);
+}
 
 const observer = createObserver({
   ownOrigin: new URL(browser.runtime.getURL('/')).origin,
   headerCache,
   onDetect: (media) => {
-    recentStore
-      .update((list) => [...list, media].slice(-50))
-      .catch((error: unknown) => {
-        console.error('[servare] could not record a detection', error);
-      });
+    recordDetection(media).catch(logFailure('record a detection'));
   },
 });
 
@@ -113,6 +161,7 @@ function settle(jobId: string): void {
 }
 
 const handlers: Partial<Handlers> = {
+  'media/list': ({ tabId }) => tabList.items(tabId),
   // Temporary development/E2E trigger; see 'download/start-direct' in the protocol.
   'download/start-direct': async ({ url, filename }) => {
     const jobId = crypto.randomUUID();
@@ -155,10 +204,15 @@ export default defineBackground({
     delivery.listen();
     registerObserver(observer, (tabId) => {
       headerCache.clearTab(tabId);
+      dropTab(tabId).catch(logFailure('clear the media list'));
     });
-    const server = new PortServer(handlers, browser.runtime.getURL('/'));
+    // A new top-level navigation starts a new list (design §3.5).
+    browser.webNavigation.onBeforeNavigate.addListener(({ tabId, frameId }) => {
+      if (frameId === 0) dropTab(tabId).catch(logFailure('clear the media list'));
+    });
+    server = new PortServer(handlers, browser.runtime.getURL('/'));
     browser.runtime.onConnect.addListener((port) => {
-      server.accept(port);
+      server?.accept(port);
     });
     browser.runtime.onInstalled.addListener(({ reason }) => {
       console.info(`[servare] ${reason} on ${platform.name}`);
