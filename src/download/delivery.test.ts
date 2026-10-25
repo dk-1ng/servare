@@ -87,12 +87,48 @@ describe('Delivery', () => {
   });
 
   it('keeps both entries when two jobs are delivered at once', async () => {
-    const { delivery, downloads } = setup();
+    const { delivery, downloads, release, fire } = setup();
     vi.mocked(downloads.download).mockResolvedValueOnce(7).mockResolvedValueOnce(8);
     await Promise.all([
       delivery.deliver(request),
       delivery.deliver({ ...request, jobId: 'j2', blobUrl: 'blob:y' }),
     ]);
-    expect(await delivery.hasPending()).toBe(true);
+    fire({ id: 7, state: { current: 'complete' } });
+    fire({ id: 8, state: { current: 'complete' } });
+    await flush();
+    expect(release).toHaveBeenCalledWith('j1', 'complete');
+    expect(release).toHaveBeenCalledWith('j2', 'complete');
+    expect(await delivery.hasPending()).toBe(false);
+  });
+
+  it('still returns the id when release fails during catch-up', async () => {
+    const { delivery, downloads, release } = setup();
+    vi.mocked(downloads.search).mockResolvedValueOnce([{ id: 7, state: 'complete' }]);
+    release.mockRejectedValueOnce(new Error('host gone'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await delivery.deliver(request)).toBe(7);
+  });
+
+  it('recovers entries saved without an id', async () => {
+    const { delivery, downloads, release } = setup();
+    // The id is never saved: download() hangs, as when Firefox waits on the save-as dialog.
+    vi.mocked(downloads.download).mockReturnValueOnce(new Promise(() => {}));
+    void delivery.deliver(request);
+    await flush();
+    vi.mocked(downloads.search).mockResolvedValue([{ id: 7, state: 'complete' }]);
+    await delivery.recover();
+    expect(release).toHaveBeenCalledWith('j1', 'complete');
+    expect(await delivery.hasPending()).toBe(false);
+  });
+
+  it('releases an id-less entry whose download never started', async () => {
+    const { delivery, downloads, release } = setup();
+    vi.mocked(downloads.download).mockReturnValueOnce(new Promise(() => {}));
+    void delivery.deliver(request);
+    await flush();
+    vi.mocked(downloads.search).mockResolvedValueOnce([]);
+    await delivery.recover();
+    expect(release).toHaveBeenCalledWith('j1', 'interrupted');
+    expect(await delivery.hasPending()).toBe(false);
   });
 });

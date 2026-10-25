@@ -84,9 +84,14 @@ export class OpfsWriter {
   /** Releases the exclusive handle; required before `getFile` can be read by other contexts. */
   close(): void {
     if (!this.handle) return;
-    this.handle.flush();
-    this.handle.close();
+    const handle = this.handle;
     this.handle = null;
+    try {
+      handle.flush();
+    } finally {
+      // The exclusive lock must go even if the flush fails, or the file cannot be removed.
+      handle.close();
+    }
   }
 
   /** Closes the handle and returns the finished file. */

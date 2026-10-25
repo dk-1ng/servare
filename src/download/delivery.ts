@@ -9,7 +9,7 @@ export interface DownloadsApiLike {
     conflictAction: 'uniquify';
     saveAs: boolean;
   }): Promise<number>;
-  search(query: { id: number }): Promise<{ id: number; state?: string }[]>;
+  search(query: { id?: number; url?: string }): Promise<{ id: number; state?: string }[]>;
   onChanged: {
     addListener(cb: (delta: DownloadDelta) => void): void;
   };
@@ -76,6 +76,9 @@ export class Delivery {
 
   /** Register listeners synchronously at startup so a wake-up event is not missed. */
   listen(): void {
+    this.recover().catch((error: unknown) => {
+      console.error('[servare] delivery recovery failed', error);
+    });
     this.downloads.onChanged.addListener((delta) => {
       const state = delta.state?.current;
       if (state === 'complete' || state === 'interrupted') {
@@ -120,13 +123,45 @@ export class Delivery {
     await this.store.update((list) =>
       list.map((e) => (e.blobUrl === blobUrl ? { ...e, downloadId } : e)),
     );
-    // A small file or a cancelled save-as dialog can end before the id was recorded, and
-    // that terminal event was then unmatched. Catch up from the download's current state.
+    // The download already happened: a failure below must not turn into a failed delivery.
+    try {
+      await this.catchUp(downloadId);
+    } catch (error) {
+      console.error('[servare] delivery catch-up failed', error);
+    }
+    return downloadId;
+  }
+
+  /**
+   * A small file or a cancelled save-as dialog can end before the id was recorded, and that
+   * terminal event was then unmatched. Catch up from the download's current state.
+   */
+  private async catchUp(downloadId: number): Promise<void> {
     const [item] = await this.downloads.search({ id: downloadId });
     if (item?.state === 'complete' || item?.state === 'interrupted') {
       await this.finish(downloadId, item.state);
     }
-    return downloadId;
+  }
+
+  /**
+   * Resolves entries left without an id because the background was suspended or restarted
+   * while `downloads.download` was pending (Firefox waits on the save-as dialog). Found by
+   * blob URL: adopt the id and catch up; not found: the download never started, so release.
+   */
+  async recover(): Promise<void> {
+    const orphans = (await this.store.get()).filter((e) => e.downloadId === undefined);
+    for (const entry of orphans) {
+      const [item] = await this.downloads.search({ url: entry.blobUrl });
+      if (!item) {
+        await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
+        await this.release(entry.jobId, 'interrupted');
+        continue;
+      }
+      await this.store.update((list) =>
+        list.map((e) => (e.blobUrl === entry.blobUrl ? { ...e, downloadId: item.id } : e)),
+      );
+      await this.catchUp(item.id);
+    }
   }
 
   private async finish(downloadId: number, outcome: DeliveryOutcome): Promise<void> {
