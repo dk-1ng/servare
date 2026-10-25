@@ -70,6 +70,15 @@ Both backgrounds are suspended after about 30 s without extension events, and an
 - **Firefox only:** if the user closes the host tab, its worker dies with it. `tabs.onRemoved` marks running jobs `paused`, and they resume through the §4.10 path. The host page also registers a `beforeunload` prompt while jobs run, but this is best-effort only: browsers show it just for pages the user interacted with, and the host tab never is. `tabs.onRemoved` is the real mechanism.
 - Offscreen documents only get `runtime` APIs, so the host cannot use `downloads`. The host creates the blob URL and sends it to the background. The background calls `downloads.download` and watches `downloads.onChanged` (which also wakes it). When the download completes or is interrupted, the background tells the host to revoke the URL; once no jobs are running or awaiting delivery, it closes the host (`offscreen.closeDocument` / `tabs.remove`). The blob URL must outlive the download.
 
+**Messaging between host and background (implemented in #6):**
+
+- Host → background (`delivery/deliver`, `worker/failed`): `PortClient` over `runtime.connect`, reconnecting on demand.
+- Background → host (`worker/start`, `delivery/release`): the same request envelopes over `runtime.sendMessage` (`src/messaging/runtime.ts`). A port cannot carry these: it is gone whenever the background was suspended, which is exactly when `downloads.onChanged` wakes it to release a blob URL. `worker/start` is retried for a few seconds because a freshly created host is not listening yet. Hosts only answer senders from the extension's own origin.
+- A host owns no job when it starts, and blob URLs die with their page, so at start it deletes every temporary OPFS file (`cleanupOrphans` with an empty keep set) before accepting jobs.
+- If `delivery/deliver` throws, the host revokes the blob URL, deletes the OPFS file and reports `worker/failed`.
+- The download worker bundle must not depend on zod (its `new Function` probe trips `web-ext lint`); it uses the plain types in `src/download/worker-messages.ts`.
+- `download/start-direct` is a temporary trigger for development and E2E, replaced by the real enqueue flow in #11/#25.
+
 **Evidence** (Chromium 156 headless and Firefox 158 headless via `web-ext run`, 2026-10-25). Each variant ran one throwaway probe extension. The module worker fetched 256 KiB chunks from a local server, hashed them with SHA-256 and wrote them to OPFS through `createSyncAccessHandle`, reporting a heartbeat every 10 s to a log endpoint. The background stayed idle during the job. Every 10-minute survivor delivered all 59 heartbeats and about 740 MiB, and its OPFS writes succeeded. Chromium's service-worker state was sampled every 5 s from the DevTools target list without attaching to it.
 
 | Variant                                                                     | Background during job                                                                                             | Worker                  |
