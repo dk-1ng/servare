@@ -29,6 +29,7 @@ interface E2eApi {
   tabId(prefix: string): Promise<number | undefined>;
   failures(): Promise<{ jobId: string; error: { kind: string; message: string } }[]>;
   opfs(): Promise<string[] | null>;
+  tabList(): Promise<Record<string, { entries: { url: string; key: string }[] }>>;
   hosts(): Promise<number>;
   estimate(): Promise<{ usage?: number; quota?: number }>;
   downloads(): Promise<{ filename: string; state: string; bytes: number; error?: string }[]>;
@@ -491,6 +492,60 @@ async function runTarget(target: Target, origin: string): Promise<void> {
       'a file was saved for the job cancelled from the popup',
     );
     log.push('  ok   Cancel in the popup stopped a running job; nothing saved');
+
+    // 7. Per-tab list (#56): token deduplication, clearing on navigation and on close.
+    const entriesOf = async (tab: number): Promise<{ url: string; key: string }[]> =>
+      (await call('tabList'))[String(tab)]?.entries ?? [];
+    const listPage = await browser.newPage();
+    const playerPath = `${origin}/pages/player.html`;
+    // The earlier popup step left its player tab open: find this one by its own URL.
+    const listUrl = `${playerPath}?src=${encodeURIComponent('/synthetic/2mb.bin?token=aaa')}`;
+    await listPage.goto(listUrl);
+    const listTab = await until('list tab id', 10000, async () => call('tabId', listUrl));
+    await until('first tokenized URL detected', 30000, async () =>
+      (await entriesOf(listTab)).length === 1 ? true : undefined,
+    );
+    // The same media again with a fresh token, requested by the page's own <video>.
+    await listPage.evaluate(() => {
+      const video = document.querySelector('video');
+      if (video) video.src = '/synthetic/2mb.bin?token=bbb';
+    });
+    await until('second token replaces the URL', 30000, async () =>
+      (await entriesOf(listTab)).some((e) => e.url.includes('token=bbb')) ? true : undefined,
+    );
+    // Give a straggling duplicate time to show up before asserting there is only one.
+    await sleep(1500);
+    const deduped = await entriesOf(listTab);
+    assert(
+      deduped.length === 1 && deduped[0]?.url.includes('token=bbb'),
+      `expected one deduplicated item with the latest token, got ${JSON.stringify(deduped)}`,
+    );
+    log.push('  ok   two tokenized URLs for the same media yield one item (latest token)');
+
+    // Navigating the top frame empties the list.
+    await listPage.goto(`${origin}/pages/index.html`);
+    await until('list emptied by navigation', 30000, async () =>
+      (await entriesOf(listTab)).length === 0 ? true : undefined,
+    );
+    assert(!(String(listTab) in (await call('tabList'))), 'the tab entry survived the navigation');
+    log.push('  ok   navigating the tab emptied its list');
+
+    // Closing the tab removes the entry.
+    const closeTabPage = await browser.newPage();
+    await closeTabPage.goto(
+      `${playerPath}?src=${encodeURIComponent('/synthetic/2mb.bin?token=ccc')}`,
+    );
+    const closeTab = await until('close tab id', 10000, async () =>
+      call('tabId', `${playerPath}?src=${encodeURIComponent('/synthetic/2mb.bin?token=ccc')}`),
+    );
+    await until('item detected in the tab to close', 30000, async () =>
+      (await entriesOf(closeTab)).length === 1 ? true : undefined,
+    );
+    await closeTabPage.close();
+    await until('entry removed by closing the tab', 30000, async () =>
+      String(closeTab) in (await call('tabList')) ? undefined : true,
+    );
+    log.push('  ok   closing the tab removed its entry');
   } finally {
     await browser.close().catch(() => undefined);
     if (process.env['E2E_KEEP']) console.info(`  kept ${work}`);
