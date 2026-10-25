@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DownloadErrorSchema, DownloadJobSchema, MediaItemSchema, TrackSchema } from './schemas';
+import { HistoryEntrySchema } from '../history';
 
 /**
  * Every request the background answers, with its payload and response schema.
@@ -44,6 +45,8 @@ export const requestSchemas = {
       blobUrl: z.string().startsWith('blob:'),
       filename: z.string().min(1).max(255),
       saveAs: z.boolean().default(false),
+      /** Size of the finished file, for the history entry. */
+      bytes: z.number().nonnegative().optional(),
     }),
     response: z.object({ downloadId: z.number().int() }),
   },
@@ -59,6 +62,18 @@ export const requestSchemas = {
       url: z.url().max(8192),
       filename: z.string().min(1).max(255),
     }),
+    response: z.null(),
+  },
+  'history/list': {
+    request: z.object({ limit: z.number().int().positive().optional() }),
+    response: z.array(HistoryEntrySchema),
+  },
+  'history/remove': {
+    request: z.object({ entryId: z.string() }),
+    response: z.null(),
+  },
+  'history/clear': {
+    request: z.object({}),
     response: z.null(),
   },
   /** Worker host → background: the job failed before or during delivery. */
@@ -99,6 +114,7 @@ export const requestSchemas = {
 export const eventSchemas = {
   'media/updated': z.object({ tabId: z.number().int(), items: z.array(MediaItemSchema) }),
   'job/updated': z.object({ job: DownloadJobSchema }),
+  'history/updated': z.object({ entries: z.array(HistoryEntrySchema) }),
   'tracks/updated': z.object({ mediaId: z.string(), audioTracks: z.array(TrackSchema) }),
 } as const;
 

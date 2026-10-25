@@ -10,6 +10,7 @@ import { PageMetaSchema } from '@/src/detection/page-meta-schema';
 import { TabMediaList, type ListState } from '@/src/detection/tab-list';
 import { registerObserver } from '@/src/detection/register';
 import { HeaderConflictError, HeaderReplay, type ReplayRecord } from '@/src/net/header-replay';
+import { DownloadHistory, type HistoryEntry } from '@/src/history';
 import { createStore, localArea, sessionArea } from '@/src/state';
 import {
   DownloadErrorSchema,
@@ -27,19 +28,39 @@ const workerHost = createWorkerHost();
 interface RunningJob {
   mediaId: string;
   outputName: string;
+  title: string;
+  pageUrl: string;
+  /** Private-window jobs (or jobs whose tab is unknown) are never added to the history. */
+  private: boolean;
 }
 
 /** Jobs handed to the worker host whose result has not reached `Delivery` yet. */
 const runningStore = createStore({
   area: sessionArea,
   key: 'direct.running',
-  schema: z.record(z.string(), z.object({ mediaId: z.string(), outputName: z.string() })),
-  version: 2,
+  schema: z.record(
+    z.string(),
+    z.object({
+      mediaId: z.string(),
+      outputName: z.string(),
+      title: z.string(),
+      pageUrl: z.string(),
+      private: z.boolean(),
+    }),
+  ),
+  version: 3,
   // Version 1 was a list of job IDs with nothing else known about them.
   migrations: {
     1: (data) =>
       Object.fromEntries(
         (data as string[]).map((id) => [id, { mediaId: id, outputName: '' }] as const),
+      ),
+    // Jobs from before the history are treated as private: nothing is recorded for them.
+    2: (data) =>
+      Object.fromEntries(
+        Object.entries(data as Record<string, { mediaId: string; outputName: string }>).map(
+          ([id, job]) => [id, { ...job, title: '', pageUrl: '', private: true }] as const,
+        ),
       ),
   },
   defaults: (): Record<string, RunningJob> => ({}),
@@ -71,6 +92,29 @@ const failuresStore = createStore({
   version: 1,
   defaults: (): { jobId: string; error: DownloadError }[] => [],
 });
+
+const history = new DownloadHistory(localArea);
+
+/** Adds a finished job to the history and tells the UI; private jobs leave no trace (principle 4). */
+async function recordHistory(
+  jobId: string,
+  job: RunningJob,
+  status: HistoryEntry['status'],
+  bytes: number,
+): Promise<void> {
+  if (job.private) return;
+  const entries = await history.record({
+    id: jobId,
+    title: job.title.slice(0, 1024) || job.outputName,
+    pageUrl: job.pageUrl,
+    outputName: job.outputName,
+    kind: 'direct',
+    completedAt: Date.now(),
+    bytes,
+    status,
+  });
+  server?.emit('history/updated', { entries });
+}
 
 const headerStore = createStore({
   area: sessionArea,
@@ -210,6 +254,9 @@ async function failJob(jobId: string, error: DownloadError): Promise<void> {
   const job = (await runningStore.get())[jobId];
   if (job) {
     emitJob(jobId, job, { status: error.kind === 'cancelled' ? 'cancelled' : 'failed', error });
+    if (error.kind !== 'cancelled') {
+      await recordHistory(jobId, job, 'failed', 0).catch(logFailure('record the history'));
+    }
   }
   settle(jobId);
 }
@@ -274,7 +321,16 @@ const handlers: Partial<Handlers> = {
   // Temporary development/E2E trigger; see 'download/start-direct' in the protocol.
   'download/start-direct': async ({ url, filename, tabId }) => {
     const jobId = crypto.randomUUID();
-    const job: RunningJob = { mediaId: jobId, outputName: filename };
+    // Without a known tab there is no way to tell whether the page is private: record nothing.
+    const tab =
+      tabId === undefined ? undefined : await browser.tabs.get(tabId).catch(() => undefined);
+    const job: RunningJob = {
+      mediaId: jobId,
+      outputName: filename,
+      title: tab?.title ?? '',
+      pageUrl: tab?.url && /^https?:/.test(tab.url) ? tab.url : '',
+      private: tab === undefined || tab.incognito,
+    };
     try {
       await exclusive(async () => {
         // The sweep removes rules no job owns: it must not run between this job's ownership
@@ -309,6 +365,16 @@ const handlers: Partial<Handlers> = {
     emitJob(jobId, job, {});
     return { jobId };
   },
+  'history/list': ({ limit }) => history.list(limit),
+  'history/remove': async ({ entryId }) => {
+    server?.emit('history/updated', { entries: await history.remove(entryId) });
+    return null;
+  },
+  'history/clear': async () => {
+    await history.clear();
+    server?.emit('history/updated', { entries: [] });
+    return null;
+  },
   'download/cancel': async ({ jobId }) => {
     const job = (await runningStore.get())[jobId];
     if (!job) return null;
@@ -337,7 +403,16 @@ const handlers: Partial<Handlers> = {
     // the host here could cut that cleanup short.
     const downloadId = await delivery.deliver(request);
     const job = (await runningStore.get())[request.jobId];
-    if (job) emitJob(request.jobId, job, { status: 'done', progress: 1 });
+    if (job) {
+      emitJob(request.jobId, job, {
+        status: 'done',
+        progress: 1,
+        bytesWritten: request.bytes ?? 0,
+      });
+      await recordHistory(request.jobId, job, 'done', request.bytes ?? 0).catch(
+        logFailure('record the history'),
+      );
+    }
     settle(request.jobId);
     return { downloadId };
   },
