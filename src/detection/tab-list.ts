@@ -9,8 +9,13 @@ export const SMALL_DIRECT_SIZE = 10 * 1024 * 1024;
 const MAX_ENTRIES_PER_TAB = 100;
 const MAX_URL_LENGTH = 8192;
 const MAX_TITLE_LENGTH = 1024;
-/** Retired document IDs remembered per tab: enough for a burst of navigations. */
-const MAX_RETIRED_DOCUMENTS = 64;
+/** Frame documents remembered under the current top document; the oldest go first. */
+const MAX_FRAME_DOCUMENTS = 64;
+/**
+ * Retired document IDs remembered per tab. One commit retires at most the frames, the top
+ * document and two IDs per dropped entry, so it never pushes out its own retirements.
+ */
+const MAX_RETIRED_DOCUMENTS = MAX_FRAME_DOCUMENTS + 1 + 2 * MAX_ENTRIES_PER_TAB + 35;
 
 /** What the tab says about itself, from `tabs.get` and the content script. */
 export interface PageInfo {
@@ -45,12 +50,15 @@ export interface Commit {
 }
 
 /**
- * Documents seen in a tab, in memory only. Losing it to a suspension costs little: suspension
- * needs about 30 s without events, longer than a left page's requests stay in flight.
+ * Documents seen in a tab, in memory only, so a suspension loses them. A commit therefore also
+ * retires the documents of the stored entries it drops, which survive suspension; what is lost
+ * is only a document that reported no media (design §3.5).
  */
 interface TabDocuments {
-  /** The top document and the frames committed under it since. */
-  live: Set<string>;
+  /** The current top document, once a commit has been seen. */
+  top?: string | undefined;
+  /** Frames committed under the top document, oldest first. */
+  frames: Set<string>;
   /** Documents the tab has navigated away from, oldest first. */
   retired: string[];
   /** Top-frame commits seen, and the URL of the latest. */
@@ -93,6 +101,21 @@ function nameFromUrl(url: string): string {
   } catch {
     return '';
   }
+}
+
+const HTTP_URL = /^https?:/;
+
+/**
+ * The page URL to record for a detection, or `undefined` to skip it (the MediaItem contract
+ * only carries http(s) page URLs). While a navigation is in flight Firefox can report the tab
+ * as `about:blank`; a top-frame navigation response (no document yet) is then the page itself,
+ * and the commit that follows records the final URL (design §3.5).
+ */
+export function pageUrlFor(tabUrl: string | undefined, media: DetectedMedia): string | undefined {
+  if (tabUrl !== undefined && HTTP_URL.test(tabUrl)) return tabUrl;
+  const navigation =
+    media.frameId === 0 && media.documentId === undefined && media.parentDocumentId === undefined;
+  return navigation && HTTP_URL.test(media.url) ? media.url : undefined;
 }
 
 /** Hides what is probably a fragment while the tab has a manifest (design §3.5). */
@@ -248,27 +271,61 @@ export class TabMediaList {
 
   /** A frame below the top one committed a document: it belongs to the current page. */
   noteFrame(tabId: number, documentId: string | undefined): void {
-    if (documentId !== undefined) this.documents.get(tabId)?.live.add(documentId);
+    const docs = this.documents.get(tabId);
+    if (documentId === undefined || !docs || documentId === docs.top) return;
+    docs.frames.delete(documentId);
+    docs.frames.add(documentId);
+    // Only frames are capped: the top document is kept apart and always retired.
+    for (const oldest of docs.frames) {
+      if (docs.frames.size <= MAX_FRAME_DOCUMENTS) break;
+      docs.frames.delete(oldest);
+    }
+  }
+
+  /** Appends documents to the tab's retired list, never the current one. */
+  private retire(docs: TabDocuments, ids: Iterable<string | undefined>, current?: string): void {
+    for (const id of ids) {
+      if (id === undefined || id === current) continue;
+      const at = docs.retired.indexOf(id);
+      if (at !== -1) docs.retired.splice(at, 1);
+      docs.retired.push(id);
+    }
+    if (docs.retired.length > MAX_RETIRED_DOCUMENTS) {
+      docs.retired.splice(0, docs.retired.length - MAX_RETIRED_DOCUMENTS);
+    }
   }
 
   /**
    * The top frame committed a new document (design §3.5). Every document seen so far in the tab
-   * is retired, so their late responses are ignored, and the list keeps only what already
-   * belongs to the new document: its own requests, its direct frames, and the navigation
-   * response itself (a media file opened in the tab). Returns whether the list changed.
+   * is retired, so their late responses are ignored: the previous top document, its frames, and
+   * the documents of the entries dropped here. The list keeps only what already belongs to the
+   * new document: its own requests, its direct frames, and the navigation response itself (a
+   * media file opened in the tab). Returns whether the list changed.
    */
   async commit({ tabId, url, documentId }: Commit): Promise<boolean> {
     const previous = this.documents.get(tabId);
-    const retired = [...(previous?.retired ?? []), ...(previous?.live ?? [])]
+    const docs: TabDocuments = {
+      top: documentId,
+      frames: new Set(),
       // Back/forward cache: a restored document is current again.
-      .filter((id) => id !== documentId)
-      .slice(-MAX_RETIRED_DOCUMENTS);
-    this.documents.set(tabId, {
-      live: new Set(documentId === undefined ? [] : [documentId]),
-      retired,
+      retired: (previous?.retired ?? []).filter((id) => id !== documentId),
       commits: (previous?.commits ?? 0) + 1,
       url,
-    });
+    };
+    // The previous top document goes last, after its frames.
+    this.retire(docs, [...(previous?.frames ?? []), previous?.top], documentId);
+    this.documents.set(tabId, docs);
+    /** Dropped entries come from storage too, so they still name the documents after a wake-up. */
+    const retireDropped = (state: TabState, kept: readonly Entry[]): void => {
+      // Runs inside the serialized write: a later commit or a close may have replaced `docs`.
+      const current = this.documents.get(tabId);
+      if (!current) return;
+      const ids = state.entries
+        .filter((entry) => !kept.includes(entry))
+        .flatMap((entry) => [entry.documentId, entry.parentDocumentId])
+        .filter((id) => id === undefined || !current.frames.has(id));
+      this.retire(current, ids, current.top);
+    };
     const key = normalizeUrl(url);
     const belongs = (entry: Entry): boolean => {
       // The MediaItem contract only carries http(s) page URLs.
@@ -287,6 +344,7 @@ export class TabMediaList {
     /** `undefined` when nothing is left; the same object when nothing changed. */
     const prune = (state: TabState): TabState | undefined => {
       const entries = state.entries.filter(belongs);
+      retireDropped(state, entries);
       if (entries.length === 0) return undefined;
       if (entries.length === state.entries.length && state.page.pageUrl === url) return state;
       // Title and thumbnail were read from the previous page; the next detection refreshes them.

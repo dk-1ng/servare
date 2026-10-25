@@ -5,7 +5,7 @@ import { MediaItemSchema } from '@/src/messaging';
 import { normalizeUrl } from './normalize';
 import type { DetectedMedia } from './observer';
 import { readPageMeta } from './page-meta';
-import { TabMediaList, type ListState } from './tab-list';
+import { pageUrlFor, TabMediaList, type ListState } from './tab-list';
 
 const MB = 1024 * 1024;
 
@@ -270,6 +270,47 @@ describe('TabMediaList document tracking (design §3.5)', () => {
     expect(await list.items(1)).toEqual([]);
     await list.add(media(), { pageUrl: next }, false);
     expect(await list.items(1)).toHaveLength(1);
+  });
+
+  it('always retires the previous top document, however many frames it had', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    for (let i = 0; i < 80; i++) list.noteFrame(1, `A-frame-${String(i)}`);
+    await list.commit({ tabId: 1, url: next, documentId: 'B' });
+    await list.add(media({ documentId: 'A' }), page, false);
+    await list.add(media({ url: 'https://c.com/f.mp4', documentId: 'A-frame-79' }), page, false);
+    expect(await list.items(1)).toEqual([]);
+  });
+
+  it('retires the documents of stored entries after a suspension', async () => {
+    const { area, list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });
+    await list.add(media({ documentId: 'A' }), page, false);
+    await list.add(media({ url: 'https://c.com/f.mp4', parentDocumentId: 'A' }), page, false);
+    // A new background over the same storage knows nothing about the tab's documents.
+    const store = createStore({
+      area,
+      key: 'tabs',
+      schema: z.custom<ListState>(),
+      version: 1,
+      defaults: (): ListState => ({}),
+    });
+    const woken = new TabMediaList({ store });
+    expect(await woken.commit({ tabId: 1, url: next, documentId: 'B' })).toBe(true);
+    await woken.add(media({ url: 'https://c.com/late.mp4', documentId: 'A' }), page, false);
+    expect(await woken.items(1)).toEqual([]);
+    await woken.add(media({ url: 'https://c.com/b.mp4', documentId: 'B' }), page, false);
+    expect(await woken.items(1)).toHaveLength(1);
+  });
+
+  it('uses a navigation response as the page while the tab reports about:blank', () => {
+    const top = media({ url: 'https://c.com/top.mp4' });
+    expect(pageUrlFor('https://example.com/a', top)).toBe('https://example.com/a');
+    expect(pageUrlFor('about:blank', top)).toBe('https://c.com/top.mp4');
+    expect(pageUrlFor(undefined, top)).toBe('https://c.com/top.mp4');
+    expect(pageUrlFor('about:blank', media({ documentId: 'A' }))).toBeUndefined();
+    expect(pageUrlFor('about:blank', media({ frameId: 5 }))).toBeUndefined();
+    expect(pageUrlFor('about:blank', media({ parentDocumentId: 'A' }))).toBeUndefined();
   });
 
   it('forgets the documents of a closed tab', async () => {

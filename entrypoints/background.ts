@@ -7,7 +7,7 @@ import { HeaderCache, type HeaderEntry } from '@/src/detection/header-cache';
 import { createObserver, type DetectedMedia } from '@/src/detection/observer';
 import { READ_PAGE_META, type PageMeta } from '@/src/detection/page-meta';
 import { PageMetaSchema } from '@/src/detection/page-meta-schema';
-import { TabMediaList, type ListState } from '@/src/detection/tab-list';
+import { pageUrlFor, TabMediaList, type ListState } from '@/src/detection/tab-list';
 import { registerObserver } from '@/src/detection/register';
 import { HeaderConflictError, HeaderReplay, type ReplayRecord } from '@/src/net/header-replay';
 import {
@@ -175,14 +175,15 @@ async function readPageMeta(tabId: number): Promise<PageMeta> {
 async function recordDetection(media: DetectedMedia): Promise<void> {
   const snapshot = tabList.snapshot(media.tabId);
   const tab = await browser.tabs.get(media.tabId);
-  // The MediaItem contract only carries http(s) page URLs.
-  if (!tab.url || !/^https?:/.test(tab.url)) return;
-  const meta = await readPageMeta(media.tabId);
+  const pageUrl = pageUrlFor(tab.url, media);
+  if (pageUrl === undefined) return;
+  // The tab's own title describes another page when its URL was not usable.
+  const meta = pageUrl === tab.url ? await readPageMeta(media.tabId) : {};
   await tabList.add(
     media,
     {
-      pageUrl: tab.url,
-      title: meta.title ?? tab.title,
+      pageUrl,
+      title: meta.title ?? (pageUrl === tab.url ? tab.title : undefined),
       thumbnail: meta.thumbnail,
     },
     tab.incognito,

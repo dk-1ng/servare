@@ -25,6 +25,7 @@ interface E2eApi {
   cancel(jobId: string): Promise<null>;
   openPopup(tabId: number): Promise<void>;
   closeTabs(prefix: string): Promise<void>;
+  navigate(tabId: number, url: string): Promise<void>;
   rules(): Promise<number[]>;
   tabId(prefix: string): Promise<number | undefined>;
   failures(): Promise<{ jobId: string; error: { kind: string; message: string } }[]>;
@@ -529,7 +530,7 @@ async function runTarget(target: Target, origin: string): Promise<void> {
         () => undefined,
         () => undefined,
       );
-    await navigateFrom(listPage, "location.href = '/status/204'");
+    await call('navigate', listTab, `${origin}/status/204`);
     await sleep(1500);
     assert((await entriesOf(listTab)).length === 1, 'a 204 navigation cleared the list');
     const attachment = 'servare-e2e-attachment.bin';
@@ -575,10 +576,16 @@ async function runTarget(target: Target, origin: string): Promise<void> {
 
     // A media file opened in the tab is listed, whatever the order of its response and commit.
     const topMedia = `${origin}/synthetic/2mb.bin?as=video&top=1`;
-    await navigateFrom(listPage, `location.href = ${JSON.stringify(topMedia)}`);
+    // Typed, not from the helper: a navigation the extension starts counts as its own request.
+    // Firefox never fires `load` for the synthetic bytes, so only the start is awaited.
+    await listPage
+      .goto(topMedia, { waitUntil: 'domcontentloaded', timeout: 10000 })
+      .catch(() => undefined);
     await until('media file opened in the tab is listed', 30000, async () => {
       const entries = await entriesOf(listTab);
       return entries.length === 1 && entries[0]?.url === topMedia ? true : undefined;
+    }).catch(async (error: unknown) => {
+      throw new Error(`${String(error)}; list: ${JSON.stringify(await call('tabList'))}`);
     });
     await sleep(1500);
     assert(
