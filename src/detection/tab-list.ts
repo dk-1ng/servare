@@ -153,7 +153,12 @@ export class TabMediaList {
               detectedAt: media.detectedAt,
             },
           ];
-      return { page, entries: next.slice(-MAX_ENTRIES_PER_TAB) };
+      // A failed metadata read must not erase a thumbnail found earlier.
+      const thumbnail = page.thumbnail ?? state?.page.thumbnail;
+      return {
+        page: { ...page, ...(thumbnail !== undefined && { thumbnail }) },
+        entries: next.slice(-MAX_ENTRIES_PER_TAB),
+      };
     };
     if (incognito) {
       this.privateTabs.set(media.tabId, apply(this.privateTabs.get(media.tabId)));
