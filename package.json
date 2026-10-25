@@ -23,7 +23,8 @@
     "postinstall": "wxt prepare",
     "lint:firefox": "web-ext lint -s .output/firefox-mv3",
     "fixtures": "bash test/fixtures/make.sh",
-    "test:server": "node test/server/cli.ts"
+    "test:server": "node test/server/cli.ts",
+    "test:e2e": "pnpm build && node test/e2e/run.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -33,6 +34,7 @@
     "globals": "^17.13.0",
     "hls.js": "^1.7.3",
     "prettier": "^3.9.10",
+    "puppeteer-core": "^25.16.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.0",
     "vitest": "^5.0.5",

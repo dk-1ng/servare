@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DownloadJobSchema, MediaItemSchema, TrackSchema } from './schemas';
+import { DownloadErrorSchema, DownloadJobSchema, MediaItemSchema, TrackSchema } from './schemas';
 
 /**
  * Every request the background answers, with its payload and response schema.
@@ -51,6 +51,31 @@ export const requestSchemas = {
   'delivery/release': {
     request: z.object({ jobId: z.string(), outcome: z.enum(['complete', 'interrupted']) }),
     response: z.null(),
+  },
+  /** Background → worker host (over `runtime.sendMessage`): run a job in the download worker. */
+  'worker/start': {
+    request: z.object({
+      jobId: z.string(),
+      url: z.url().max(8192),
+      filename: z.string().min(1).max(255),
+    }),
+    response: z.null(),
+  },
+  /** Worker host → background: the job failed before or during delivery. */
+  'worker/failed': {
+    request: z.object({ jobId: z.string(), error: DownloadErrorSchema }),
+    response: z.null(),
+  },
+  /**
+   * TEMPORARY entry point for development and E2E (until #11/#25 provide real enqueueing):
+   * saves a single http(s) URL as a direct file. Only extension pages can reach it.
+   */
+  'download/start-direct': {
+    request: z.object({
+      url: z.url({ protocol: /^https?$/ }).max(8192),
+      filename: z.string().min(1).max(255),
+    }),
+    response: z.object({ jobId: z.string() }),
   },
 } as const;
 
