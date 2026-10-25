@@ -271,6 +271,18 @@ describe('HeaderCache across suspension', () => {
     expect(cache.get(1, 'https://b')).toBeDefined();
   });
 
+  it('evicts the oldest entry on restore, not the capture that woke the background', async () => {
+    const cache = new HeaderCache({
+      maxEntries: 1,
+      now: () => 500,
+      restore: async () => [entry(1, 'https://old', 100)],
+    });
+    cache.record({ tabId: 1, origin: 'https://new', headers: { cookie: 'n' } });
+    await cache.restore();
+    expect(cache.get(1, 'https://new')).toBeDefined();
+    expect(cache.get(1, 'https://old')).toBeUndefined();
+  });
+
   it('leaves incognito unknown when the browser does not report it', () => {
     const cache = new HeaderCache();
     const observer = createObserver({

@@ -103,6 +103,11 @@ export class HeaderCache {
         this.entries.set(k, entry);
         this.persistedAt.set(k, entry.capturedAt);
       }
+      // Saved entries were appended after newer in-memory ones: restore oldest-first order so
+      // `prune` evicts the oldest, not the capture that woke the background.
+      const ordered = [...this.entries].sort(([, x], [, y]) => x.capturedAt - y.capturedAt);
+      this.entries.clear();
+      for (const [k, entry] of ordered) this.entries.set(k, entry);
       this.prune();
     })().catch(() => undefined);
     return this.restored;
