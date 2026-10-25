@@ -335,6 +335,47 @@ describe('TabMediaList document tracking (design §3.5)', () => {
     expect(await list.items(1)).toEqual([]);
   });
 
+  it('links frames known only from stored entries, so a restore brings them back', async () => {
+    const { area, list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'D' });
+    await list.add(media({ documentId: 'F', parentDocumentId: 'D' }), page, false);
+    await list.add(
+      media({ url: 'https://c.com/n.mp4', documentId: 'N', parentDocumentId: 'F' }),
+      page,
+      false,
+    );
+    // A new background over the same storage: no document state, no frame commits seen.
+    const store = createStore({
+      area,
+      key: 'tabs',
+      schema: z.custom<ListState>(),
+      version: 1,
+      defaults: (): ListState => ({}),
+    });
+    const woken = new TabMediaList({ store });
+    await woken.commit({ tabId: 1, url: next, documentId: 'E' });
+    await woken.add(media({ url: 'https://c.com/late.mp4', documentId: 'F' }), page, false);
+    expect(await woken.items(1)).toEqual([]);
+    await woken.commit({ tabId: 1, url: page.pageUrl, documentId: 'D' });
+    await woken.add(media({ url: 'https://c.com/f.mp4', documentId: 'F' }), page, false);
+    // Nested: N was linked under F, which was linked under D.
+    await woken.add(media({ url: 'https://c.com/n2.mp4', documentId: 'N' }), page, false);
+    expect(await woken.items(1)).toHaveLength(2);
+  });
+
+  it('accepts a frame past the frame cap after a restore', async () => {
+    const { list } = setup();
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'D' });
+    list.noteFrame(1, 'F0');
+    for (let i = 1; i <= 70; i++) list.noteFrame(1, `F${String(i)}`);
+    await list.add(media({ documentId: 'F0', parentDocumentId: 'D' }), page, false);
+    await list.commit({ tabId: 1, url: next, documentId: 'E' });
+    await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'D' });
+    await list.add(media({ url: 'https://c.com/f0.mp4', documentId: 'F0' }), page, false);
+    await list.add(media({ url: 'https://c.com/f70.mp4', documentId: 'F70' }), page, false);
+    expect(await list.items(1)).toHaveLength(2);
+  });
+
   it('treats a frame committing under the current page as current', async () => {
     const { list } = setup();
     await list.commit({ tabId: 1, url: page.pageUrl, documentId: 'A' });

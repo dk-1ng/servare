@@ -294,6 +294,17 @@ export class TabMediaList {
     }
   }
 
+  /** Records retired frames under their retired parent; only retired IDs are kept. */
+  private link(docs: TabDocuments, parent: string, children: readonly string[]): void {
+    const retired = new Set(docs.retired);
+    if (!retired.has(parent)) return;
+    const list = docs.retiredFrames.get(parent) ?? [];
+    for (const child of children) {
+      if (retired.has(child) && !list.includes(child)) list.push(child);
+    }
+    if (list.length > 0) docs.retiredFrames.set(parent, list);
+  }
+
   /** Appends documents to the tab's retired list, never the current one. */
   private retire(docs: TabDocuments, ids: Iterable<string | undefined>, current?: string): void {
     for (const id of ids) {
@@ -327,9 +338,18 @@ export class TabMediaList {
   async commit({ tabId, url, documentId }: Commit): Promise<boolean> {
     const previous = this.documents.get(tabId);
     const retiredFrames = new Map(previous?.retiredFrames);
-    // Back/forward cache: a restored document is current again, and so are its frames.
-    const restored = new Set(documentId === undefined ? [] : retiredFrames.get(documentId));
-    if (documentId !== undefined) retiredFrames.delete(documentId);
+    // Back/forward cache: a restored document is current again, and so are its frames, and
+    // theirs (nested frames are linked under the frame that holds them).
+    const restored = new Set<string>();
+    const pending = documentId === undefined ? [] : [documentId];
+    for (let parent = pending.pop(); parent !== undefined; parent = pending.pop()) {
+      for (const child of retiredFrames.get(parent) ?? []) {
+        if (child === documentId || restored.has(child)) continue;
+        restored.add(child);
+        pending.push(child);
+      }
+      retiredFrames.delete(parent);
+    }
     const docs: TabDocuments = {
       top: documentId,
       frames: restored,
@@ -342,24 +362,25 @@ export class TabMediaList {
     const leftFrames = [...(previous?.frames ?? [])];
     // The previous top document goes last, after its frames.
     this.retire(docs, [...leftFrames, left], documentId);
-    if (left !== undefined && left !== documentId) {
-      const still = new Set(docs.retired);
-      docs.retiredFrames.set(
-        left,
-        leftFrames.filter((id) => still.has(id)),
-      );
-    }
+    if (left !== undefined) this.link(docs, left, leftFrames);
     this.documents.set(tabId, docs);
     /** Dropped entries come from storage too, so they still name the documents after a wake-up. */
     const retireDropped = (state: TabState, kept: readonly Entry[]): void => {
       // Runs inside the serialized write: a later commit or a close may have replaced `docs`.
       const current = this.documents.get(tabId);
       if (!current) return;
-      const ids = state.entries
-        .filter((entry) => !kept.includes(entry))
+      const dropped = state.entries.filter((entry) => !kept.includes(entry));
+      const ids = dropped
         .flatMap((entry) => [entry.documentId, entry.parentDocumentId])
         .filter((id) => id === undefined || !current.frames.has(id));
       this.retire(current, ids, current.top);
+      // A frame known only from a stored entry (after a suspension, or past the frame cap) is
+      // linked under its parent, so restoring the parent brings it back.
+      for (const { documentId: child, parentDocumentId: parent } of dropped) {
+        if (child !== undefined && parent !== undefined && child !== parent) {
+          this.link(current, parent, [child]);
+        }
+      }
     };
     const key = normalizeUrl(url);
     const belongs = (entry: Entry): boolean => {
