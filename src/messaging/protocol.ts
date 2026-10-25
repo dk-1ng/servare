@@ -37,6 +37,21 @@ export const requestSchemas = {
     request: z.object({}),
     response: z.array(DownloadJobSchema),
   },
+  /** Worker host → background: a finished file is ready in a blob URL (design §4.9). */
+  'delivery/deliver': {
+    request: z.object({
+      jobId: z.string(),
+      blobUrl: z.string().startsWith('blob:'),
+      filename: z.string().min(1).max(255),
+      saveAs: z.boolean().default(false),
+    }),
+    response: z.object({ downloadId: z.number().int() }),
+  },
+  /** Background → worker host: the download ended, so the blob URL and OPFS file can go. */
+  'delivery/release': {
+    request: z.object({ jobId: z.string(), outcome: z.enum(['complete', 'interrupted']) }),
+    response: z.null(),
+  },
 } as const;
 
 /** Events pushed from the background to every connected port. */
