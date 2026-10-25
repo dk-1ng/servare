@@ -64,11 +64,11 @@ Both backgrounds are suspended after about 30 s without extension events, and an
 - **One `worker-host` entrypoint** (an HTML page that creates the module Web Worker) serves both browsers. Only the way it is opened differs, and that code lives in `src/platform/`:
   - **Chromium:** `offscreen.createDocument({ reasons: ['WORKERS'] })`. `WORKERS` has no lifetime limit; only `AUDIO_PLAYBACK` closes after 30 s of silence. One offscreen document per extension.
   - **Firefox:** `tabs.create({ url: worker-host, active: false })`, plus `autoDiscardable: false` where supported. Firefox has no offscreen API, so the host is a regular extension tab.
-- The host is opened lazily when the first job starts and closed when the queue drains. Before opening, look for an existing host so there is never more than one.
+- The host is opened lazily when the first job starts and closed when the queue drains. There must never be more than one host. Find an existing one with `runtime.getContexts` (available on both browsers), and keep a single in-flight `ensureWorkerHost()` promise in the background so two events in the same wake cannot both create one. On Chromium, treat a "document already exists" error from `createDocument` as success.
 - The background stays suspendable. It is woken by the host's `runtime.sendMessage` (progress milestones, completion, errors) and keeps all job state in `storage.session`/`storage.local`. It never relies on in-memory state between events.
 - Ports between the host and the background are **not** a lifetime mechanism. Firefox closes them when the event page suspends. The message bus must treat `onDisconnect` as normal and reconnect on demand.
-- **Firefox only:** if the user closes the host tab, its worker dies with it. `tabs.onRemoved` marks running jobs `paused`, and they resume through the §4.10 path. While jobs run, the host page asks for confirmation on `beforeunload`.
-- The blob URL handed to `downloads.download` is created in the host and must outlive the download. The host closes only after `downloads.onChanged` reports the download complete (or interrupted).
+- **Firefox only:** if the user closes the host tab, its worker dies with it. `tabs.onRemoved` marks running jobs `paused`, and they resume through the §4.10 path. The host page also registers a `beforeunload` prompt while jobs run, but this is best-effort only: browsers show it just for pages the user interacted with, and the host tab never is. `tabs.onRemoved` is the real mechanism.
+- Offscreen documents only get `runtime` APIs, so the host cannot use `downloads`. The host creates the blob URL and sends it to the background. The background calls `downloads.download` and watches `downloads.onChanged` (which also wakes it). When the download completes or is interrupted, the background tells the host to revoke the URL and then closes the host (`offscreen.closeDocument` / `tabs.remove`). The blob URL must outlive the download.
 
 **Evidence** (Chromium 156 headless and Firefox 158 headless via `web-ext run`, 2026-10-25). Each variant ran one throwaway probe extension. The module worker fetched 256 KiB chunks from a local server, hashed them with SHA-256 and wrote them to OPFS through `createSyncAccessHandle`, reporting a heartbeat every 10 s to a log endpoint. The background stayed idle during the job. Every 10-minute survivor delivered all 59 heartbeats and about 740 MiB, and its OPFS writes succeeded. Chromium's service-worker state was sampled every 5 s from the DevTools target list without attaching to it.
 
@@ -97,14 +97,15 @@ Both backgrounds are suspended after about 30 s without extension events, and an
 - packaged rather than temporary/unpacked installs;
 - Firefox tab unloading under memory pressure, and whether `autoDiscardable: false` is honored for extension tabs;
 - Firefox for Android;
-- delivering a blob URL created in the host through `downloads.download` (covered by the M0 OPFS + delivery issue).
+- the `beforeunload` prompt in a host tab the user never interacted with (expected not to show);
+- delivering a blob URL created in the host and passed to the background for `downloads.download` (covered by the M0 OPFS + delivery issue).
 
 ### 2.4 Repository layout
 
 ```
 entrypoints/        background, worker-host, download-worker, content, popup/sidebar/options
 src/
-  messaging/        zod contracts and message bus over runtime.Port
+  messaging/        zod contracts and message bus (runtime.sendMessage wakes the background; runtime.Port for live UI streams, reconnect on disconnect)
   state/            store and migrations
   detection/        network observer, classifiers, MIME types
   manifest/         HLS, DASH, codecs, protection detection
