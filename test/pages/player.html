@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Servare test player</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <h1 id="title">Servare test player</h1>
+    <video id="video" width="480" height="360" controls muted playsinline></video>
+    <pre id="status">loading</pre>
+    <!--
+      Query: kind=native|hls|dash and src=<url>. The page exposes window.__servare so automated
+      checks can wait for { status: 'playing' | 'error' } without parsing the DOM.
+    -->
+    <script>
+      const params = new URLSearchParams(location.search);
+      const kind = params.get('kind') ?? 'native';
+      const src = params.get('src') ?? '';
+      const video = document.getElementById('video');
+      const statusEl = document.getElementById('status');
+      window.__servare = { status: 'loading', kind, src, detail: '' };
+
+      function setStatus(status, detail = '') {
+        window.__servare = { status, kind, src, detail };
+        statusEl.textContent = detail ? `${status}: ${detail}` : status;
+      }
+
+      function loadScript(url) {
+        return new Promise((resolve, reject) => {
+          const el = document.createElement('script');
+          el.src = url;
+          el.onload = resolve;
+          el.onerror = () => reject(new Error(`cannot load ${url}`));
+          document.head.append(el);
+        });
+      }
+
+      video.addEventListener('timeupdate', () => {
+        if (video.currentTime > 0.5 && window.__servare.status !== 'playing') {
+          setStatus('playing', `t=${video.currentTime.toFixed(2)}`);
+        }
+      });
+      video.addEventListener('error', () =>
+        setStatus('error', video.error ? `media error ${video.error.code}` : 'media error'),
+      );
+
+      async function start() {
+        if (!src) throw new Error('missing src');
+        if (kind === 'hls') {
+          await loadScript('/vendor/hls.js');
+          if (!window.Hls.isSupported()) throw new Error('hls.js unsupported (no MSE)');
+          const hls = new window.Hls();
+          hls.on(window.Hls.Events.ERROR, (_event, data) => {
+            if (data.fatal) setStatus('error', `${data.type}: ${data.details}`);
+          });
+          hls.loadSource(src);
+          hls.attachMedia(video);
+        } else if (kind === 'dash') {
+          await loadScript('/vendor/dash.js');
+          const player = window.dashjs.MediaPlayer().create();
+          player.on('error', (e) => setStatus('error', JSON.stringify(e.error ?? e)));
+          player.initialize(video, src, false);
+        } else {
+          video.src = src;
+        }
+        await video.play().catch(() => undefined); // autoplay can be blocked; muted usually passes
+      }
+
+      start().catch((error) => setStatus('error', String(error.message ?? error)));
+    </script>
+  </body>
+</html>

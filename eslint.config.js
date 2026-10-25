@@ -3,7 +3,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['.output/', '.wxt/', 'node_modules/', 'coverage/', 'vendor/'] },
+  { ignores: ['.output/', '.wxt/', 'node_modules/', 'coverage/', 'vendor/', 'test/fixtures/out/'] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {
@@ -26,6 +26,18 @@ export default tseslint.config(
       '@typescript-eslint/no-dynamic-delete': 'off',
       '@typescript-eslint/no-meaningless-void-operator': 'off',
       '@typescript-eslint/no-confusing-void-expression': 'off',
+    },
+  },
+  {
+    // Node-side test tooling: terse early-return routing and numeric template parts are fine here.
+    files: ['test/**/*.ts'],
+    languageOptions: { globals: globals.node },
+    rules: {
+      '@typescript-eslint/no-confusing-void-expression': 'off',
+      '@typescript-eslint/restrict-template-expressions': [
+        'error',
+        { allowNumber: true, allowNullish: true },
+      ],
     },
   },
   {

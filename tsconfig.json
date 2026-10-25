@@ -7,5 +7,6 @@
     "noFallthroughCasesInSwitch": true,
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true
-  }
+  },
+  "exclude": ["test/fixtures/out", "node_modules", ".output"]
 }
