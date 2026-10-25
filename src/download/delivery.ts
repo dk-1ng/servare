@@ -201,8 +201,15 @@ export class Delivery {
           );
           await this.catchUp(item.id);
         } else if (Date.now() - entry.createdAt > STALE_AFTER_MS) {
-          await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
-          await this.countedRelease(entry.jobId, 'interrupted');
+          // Counted before the entry leaves the store, as in `finish`.
+          this.releasing++;
+          try {
+            await this.store.update((list) => list.filter((e) => e.blobUrl !== entry.blobUrl));
+          } catch (error) {
+            this.releasing--;
+            throw error;
+          }
+          await this.runRelease(entry.jobId, 'interrupted');
         }
       } catch (error) {
         console.error('[servare] delivery recovery failed for one entry', error);
@@ -239,11 +246,6 @@ export class Delivery {
         console.error('[servare] post-release hook failed', error);
       });
     }
-  }
-
-  private countedRelease(jobId: string, outcome: DeliveryOutcome): Promise<void> {
-    this.releasing++;
-    return this.runRelease(jobId, outcome);
   }
 
   /**

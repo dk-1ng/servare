@@ -205,6 +205,20 @@ describe('runDirectJob retries', () => {
     ]);
   });
 
+  it('reads a plain 200 answer to a ranged request from byte 0', async () => {
+    const h = harness([
+      new Response(body([1, 2]), { headers: { 'content-length': '4', etag: '"v1"' } }),
+      new Response(body([1, 2, 3, 4]), { headers: { 'content-length': '4', etag: '"v2"' } }),
+    ]);
+    await runDirectJob(job, h.deps);
+    expect(h.calls[1]?.headers?.['Range']).toBe('bytes=2-');
+    expect(h.writer.truncate).toHaveBeenCalledWith(0);
+    expect(h.writes).toEqual([
+      [0, [1, 2]],
+      [0, [1, 2, 3, 4]],
+    ]);
+  });
+
   it('starts over when the server ignores the range', async () => {
     const h = harness([
       new Response(body([1, 2]), { headers: { 'content-length': '4' } }),
