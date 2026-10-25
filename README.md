@@ -1,49 +1,51 @@
 # Servare
 
-Extensão para Firefox e Chromium que detecta vídeos e áudios carregados pela página e permite salvá-los localmente — arquivos diretos, HLS e DASH — com todo o processamento feito dentro do navegador.
+**English** · [Português (BR)](docs/readme/README.pt-BR.md) · [Español](docs/readme/README.es.md) · [Français](docs/readme/README.fr.md) · [Deutsch](docs/readme/README.de.md) · [Русский](docs/readme/README.ru.md) · [简体中文](docs/readme/README.zh-CN.md) · [日本語](docs/readme/README.ja.md)
 
-> **Status:** em desenvolvimento (pré-alpha). Acompanhe o progresso no [Project](https://github.com/users/dk-1ng/projects/4) e nos [milestones](../../milestones).
+A Firefox and Chromium extension that detects video and audio loaded by the page and lets you save it locally — direct files, HLS and DASH — with all processing done inside the browser.
 
-## Funcionalidades planejadas
+> **Status:** in development (pre-alpha). Follow progress on the [project board](https://github.com/users/dk-1ng/projects/4) and the [milestones](../../milestones).
 
-- Detecção automática de mídia por observação das requisições da página
-- Arquivos diretos (MP4, WebM, MKV, MP3…), HLS e DASH
-- Escolha de qualidade, faixa de áudio e legendas
-- Gravação de transmissões ao vivo (HLS)
-- Extração de áudio para MP3
-- Fila com pausa e retomada, inclusive após reiniciar o navegador
-- Remux local via FFmpeg em WebAssembly — sem aplicativo nativo, sem servidor, sem telemetria
-- Modo espelho (Firefox): reaproveita os dados que o player já baixou, sem requisições extras
+## Planned features
 
-## Fora de escopo
+- Automatic media detection by observing the page's network requests
+- Direct files (MP4, WebM, MKV, MP3…), HLS and DASH
+- Quality, audio track and subtitle selection
+- Live stream recording (HLS)
+- Audio extraction to MP3
+- Queue with pause and resume, even after restarting the browser
+- Local remuxing with FFmpeg compiled to WebAssembly — no native app, no server, no telemetry
+- Mirror mode (Firefox): reuses the data the player has already downloaded, with no extra requests
 
-- **YouTube** — não suportado, por decisão de projeto.
-- **Conteúdo com DRM** (Widevine, PlayReady, FairPlay etc.) — detectado e recusado. O Servare não contém e não aceitará código para contornar DRM, login, paywall ou qualquer outra medida de proteção técnica.
+## Out of scope
 
-## Desenvolvimento
+- **YouTube** — not supported, by design.
+- **DRM-protected content** (Widevine, PlayReady, FairPlay, etc.) — detected and refused. Servare does not contain, and will not accept, code that circumvents DRM, logins, paywalls or any other technical protection measure.
 
-Requisitos: Node.js LTS, pnpm, FFmpeg (para gerar fixtures de teste).
+## Development
+
+Requirements: Node.js LTS, pnpm, FFmpeg (to generate test fixtures).
 
 ```sh
 pnpm install
-pnpm dev            # Chromium com recarga automática
+pnpm dev            # Chromium with live reload
 pnpm dev:firefox    # Firefox
-pnpm test           # testes unitários
-pnpm build          # pacotes de produção para os dois navegadores
+pnpm test           # unit tests
+pnpm build          # production packages for both browsers
 ```
 
-> Os comandos acima passam a existir com o scaffold do projeto (milestone M0).
+> These commands become available with the project scaffold (milestone M0).
 
-Documentação técnica: [docs/design.md](docs/design.md). Como contribuir: [CONTRIBUTING.md](CONTRIBUTING.md).
+Technical documentation: [docs/design.md](docs/design.md). How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Aviso legal
+## Legal notice
 
-O Servare é uma ferramenta de uso geral para salvar mídia que o seu navegador já recebe. **Você é o único responsável pelo uso que fizer dela.** Baixe apenas conteúdo que você tem direito de baixar — conteúdo próprio, sob licença livre, em domínio público ou com autorização do titular — e respeite as leis de direito autoral do seu país e os termos de uso de cada site.
+Servare is a general-purpose tool for saving media that your browser already receives. **You are solely responsible for how you use it.** Only download content you have the right to download — your own content, content under a free license, in the public domain, or with the rights holder's permission — and respect the copyright laws of your country and each website's terms of service.
 
-O projeto não é afiliado, patrocinado ou endossado por nenhum site, serviço de streaming ou outra extensão. Nomes e marcas de terceiros pertencem aos seus respectivos donos.
+This project is not affiliated with, sponsored by or endorsed by any website, streaming service or other extension. Third-party names and trademarks belong to their respective owners.
 
-O software é fornecido "no estado em que se encontra", sem garantias, conforme a [licença MIT](LICENSE).
+The software is provided "as is", without warranty of any kind, under the [MIT license](LICENSE).
 
-## Licença
+## License
 
-[MIT](LICENSE). Componentes de terceiros (como libav.js/FFmpeg e LAME, sob LGPL-2.1) mantêm suas próprias licenças, listadas em `THIRD_PARTY_NOTICES.md`.
+[MIT](LICENSE). Third-party components (such as libav.js/FFmpeg and LAME, under LGPL-2.1) keep their own licenses, listed in `THIRD_PARTY_NOTICES.md`.

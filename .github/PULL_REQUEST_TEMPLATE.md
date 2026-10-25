@@ -1,18 +1,18 @@
-## Resumo
+## Summary
 
-<!-- O que muda e por quê. -->
+<!-- What changes and why. -->
 
 Closes #
 
-## Como foi testado
+## How it was tested
 
-- [ ] Testes unitários
+- [ ] Unit tests
 - [ ] Firefox
 - [ ] Chromium
 
 ## Checklist
 
-- [ ] O código é original ou vem de dependência com licença compatível, declarada em `THIRD_PARTY_NOTICES.md`.
-- [ ] Nenhum código copiado ou derivado de software proprietário (incluindo código descompilado/desofuscado).
-- [ ] Não adiciona suporte a YouTube nem contorna DRM ou controles de acesso.
-- [ ] Documentação (`docs/design.md`) atualizada, se o comportamento mudou.
+- [ ] The code is original or comes from a dependency with a compatible license, declared in `THIRD_PARTY_NOTICES.md`.
+- [ ] No code copied or derived from proprietary software (including decompiled/deobfuscated code).
+- [ ] Does not add YouTube support or circumvent DRM or access controls.
+- [ ] Documentation (`docs/design.md`, README translations) updated if behavior changed.

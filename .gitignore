@@ -1,17 +1,17 @@
-# Dependências e build
+# Dependencies and build
 node_modules/
 .output/
 .wxt/
 dist/
 web-ext-artifacts/
 
-# Testes
+# Tests
 coverage/
 test/fixtures/out/
 playwright-report/
 test-results/
 
-# Ambiente local
+# Local environment
 .env*
 *.log
 .DS_Store

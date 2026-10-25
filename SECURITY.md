@@ -1,21 +1,21 @@
-# Política de segurança
+# Security Policy
 
-## Versões suportadas
+## Supported versions
 
-O projeto está em pré-alpha; apenas a branch `main` recebe correções.
+The project is pre-alpha; only the `main` branch receives fixes.
 
-## Reportando uma vulnerabilidade
+## Reporting a vulnerability
 
-Não abra issue pública para falhas de segurança. Use o [reporte privado de vulnerabilidades do GitHub](../../security/advisories/new) descrevendo:
+Do not open a public issue for security problems. Use [GitHub private vulnerability reporting](../../security/advisories/new) and describe:
 
-- o problema e o impacto (ex.: vazamento de cookies/headers para outro domínio, execução de código vindo de uma página, escrita fora da pasta de downloads);
-- passos para reproduzir;
-- navegador e versão.
+- the problem and its impact (e.g. cookies/headers leaking to another domain, code from a page being executed, writes outside the downloads folder);
+- steps to reproduce;
+- browser and version.
 
-Você receberá uma resposta assim que possível. Correções são publicadas com crédito a quem reportou, se desejado.
+You will receive a response as soon as possible. Fixes are published with credit to the reporter, if desired.
 
-## Superfícies sensíveis
+## Sensitive surfaces
 
-- Regras `declarativeNetRequest` que reaplicam `Cookie`/`Referer`: devem valer apenas para requisições da extensão e ser removidas ao fim de cada download.
-- Dados vindos de páginas (manifestos, títulos, URLs) são sempre tratados como não confiáveis e validados.
-- Nenhum código remoto é carregado ou executado.
+- `declarativeNetRequest` rules that reapply `Cookie`/`Referer`: they must apply only to the extension's own requests and be removed at the end of each download.
+- Data coming from pages (manifests, titles, URLs) is always treated as untrusted and validated.
+- No remote code is loaded or executed.

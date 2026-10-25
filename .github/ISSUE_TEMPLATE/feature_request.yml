@@ -1,29 +1,29 @@
-name: Funcionalidade
-description: Proponha uma melhoria ou nova funcionalidade
+name: Feature request
+description: Propose an improvement or a new feature
 title: "feat: "
 labels: ["type: feature", "status: triage"]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: Problema
-      description: Que necessidade isso resolve?
+      label: Problem
+      description: What need does this address?
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Proposta
+      label: Proposal
     validations:
       required: true
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternativas consideradas
+      label: Alternatives considered
   - type: checkboxes
     id: scope
     attributes:
-      label: Escopo
+      label: Scope
       options:
-        - label: A proposta não envolve YouTube, contorno de DRM ou de controles de acesso.
+        - label: The proposal does not involve YouTube or circumventing DRM or access controls.
           required: true

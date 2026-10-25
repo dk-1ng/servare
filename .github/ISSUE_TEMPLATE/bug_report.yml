@@ -1,52 +1,52 @@
-name: Bug
-description: Algo não funciona como deveria
+name: Bug report
+description: Something does not work as expected
 title: "fix: "
 labels: ["type: bug", "status: triage"]
 body:
   - type: textarea
     id: what
     attributes:
-      label: O que aconteceu
-      description: Comportamento observado e o esperado.
+      label: What happened
+      description: Observed behavior and expected behavior.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: Como reproduzir
+      label: Steps to reproduce
       placeholder: |
-        1. Abrir uma página com stream HLS…
-        2. Clicar em baixar…
+        1. Open a page with an HLS stream…
+        2. Click download…
     validations:
       required: true
   - type: dropdown
     id: browser
     attributes:
-      label: Navegador
+      label: Browser
       multiple: true
-      options: [Firefox, Chrome, Edge, Brave, Outro Chromium]
+      options: [Firefox, Chrome, Edge, Brave, Other Chromium]
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: Versões
+      label: Versions
       placeholder: "Servare 0.1.0 · Firefox 140"
   - type: dropdown
     id: media
     attributes:
-      label: Tipo de mídia
-      options: [Arquivo direto, HLS, DASH, Ao vivo, Não sei]
+      label: Media type
+      options: [Direct file, HLS, DASH, Live, Not sure]
   - type: textarea
     id: logs
     attributes:
       label: Logs
-      description: Console do background/worker. Remova cookies, tokens e URLs privadas.
+      description: Background/worker console. Remove cookies, tokens and private URLs.
       render: text
   - type: checkboxes
     id: scope
     attributes:
-      label: Escopo
+      label: Scope
       options:
-        - label: O conteúdo não é do YouTube nem protegido por DRM.
+        - label: The content is not from YouTube and is not DRM-protected.
           required: true
