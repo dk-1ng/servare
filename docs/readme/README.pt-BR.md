@@ -1,5 +1,7 @@
 # Servare
 
+[![CI](https://github.com/dk-1ng/servare/actions/workflows/ci.yml/badge.svg)](https://github.com/dk-1ng/servare/actions/workflows/ci.yml)
+
 [English](../../README.md) · **Português (BR)** · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Русский](README.ru.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 > Esta é uma tradução. Em caso de divergência, vale a [versão em inglês](../../README.md).

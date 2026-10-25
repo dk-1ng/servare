@@ -1,5 +1,7 @@
 # Servare
 
+[![CI](https://github.com/dk-1ng/servare/actions/workflows/ci.yml/badge.svg)](https://github.com/dk-1ng/servare/actions/workflows/ci.yml)
+
 **English** · [Português (BR)](docs/readme/README.pt-BR.md) · [Español](docs/readme/README.es.md) · [Français](docs/readme/README.fr.md) · [Deutsch](docs/readme/README.de.md) · [Русский](docs/readme/README.ru.md) · [简体中文](docs/readme/README.zh-CN.md) · [日本語](docs/readme/README.ja.md)
 
 A Firefox and Chromium extension that detects video and audio loaded by the page and lets you save it locally — direct files, HLS and DASH — with all processing done inside the browser.
