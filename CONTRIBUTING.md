@@ -41,6 +41,7 @@ Contributions that do any of the following will not be accepted:
 - Tests sit next to the behavior: parsers and pure utilities require unit tests.
 - Media fixtures are **generated locally** (`test/fixtures/make.sh`); do not add third-party video or audio to the repository.
 - When a change to the README affects user-facing information, update the translations in `docs/readme/` too (or open an issue for them).
+- GitHub Actions are pinned to a full commit SHA with the version in a comment (`uses: owner/action@<40-char sha> # vX.Y.Z`), never to a tag or branch; Dependabot keeps them updated. `actions/checkout` runs with `persist-credentials: false`.
 
 ## Reporting problems
 
