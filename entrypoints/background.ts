@@ -212,7 +212,10 @@ const delivery = new Delivery(
   },
   // Runs after every release, success or not, once it is no longer in flight.
   () => closeHostWhenIdle(),
-  { incognitoOption: platform.downloadsIncognitoOption },
+  {
+    incognitoOption: platform.downloadsIncognitoOption,
+    erasePrivateHistory: platform.erasePrivateDownloads,
+  },
 );
 
 /**

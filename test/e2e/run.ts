@@ -33,6 +33,7 @@ interface E2eApi {
   tabList(): Promise<Record<string, { entries: { url: string; key: string }[] }>>;
   hosts(): Promise<number>;
   estimate(): Promise<{ usage?: number; quota?: number }>;
+  history(): Promise<string[]>;
   downloads(): Promise<{ filename: string; state: string; bytes: number; error?: string }[]>;
 }
 
@@ -277,6 +278,14 @@ async function runTarget(target: Target, origin: string): Promise<void> {
       (await readdir(downloads)).every((f) => f === name),
       `unexpected files: ${(await readdir(downloads)).join(', ')}`,
     );
+    if (target === 'chromium') {
+      // The job is tabless, hence private: Chromium must not keep it in the regular history (#64).
+      const listed = await call('history');
+      assert(
+        listed.every((f) => !f.includes('servare-e2e-2gb')),
+        `private download still in the downloads history: ${listed.join(', ')}`,
+      );
+    }
     log.push(`  ok   2 GB saved as ${name}, ${onDisk.size} bytes on disk (${seconds}s)`);
     await waitClosedAndClean('after success');
     log.push('  ok   host closed and OPFS servare-tmp empty after success');

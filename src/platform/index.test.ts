@@ -8,6 +8,7 @@ describe('resolvePlatform', () => {
       needsOffscreenDocument: false,
       needsExtraHeaders: false,
       downloadsIncognitoOption: true,
+      erasePrivateDownloads: false,
     });
   });
 
@@ -18,6 +19,7 @@ describe('resolvePlatform', () => {
         needsOffscreenDocument: true,
         needsExtraHeaders: true,
         downloadsIncognitoOption: false,
+        erasePrivateDownloads: true,
       });
     }
   });
