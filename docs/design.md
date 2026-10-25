@@ -1,6 +1,6 @@
 # Servare — Design Document
 
-> Status: approved draft for the MVP · Last revised: 2026-10-24
+> Status: approved draft for the MVP · Last revised: 2026-10-25
 
 ## 1. Overview
 
@@ -47,26 +47,65 @@ Servare is a browser extension (Firefox and Chromium, Manifest V3) that detects 
 
 ### 2.2 Components
 
-| Component                    | Firefox                                            | Chromium                              | Responsibility                                                          |
-| ---------------------------- | -------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------- |
-| Background                   | event page                                         | service worker                        | Detection, per-tab state, queue, header rules, delivery via `downloads` |
-| Worker host                  | background or extension page (decided in spike #3) | offscreen document (reason `WORKERS`) | Keep the download worker alive                                          |
-| Download worker              | module Web Worker                                  | module Web Worker                     | Networking, AES-128 decryption, libav, OPFS writes                      |
-| Content script               | ISOLATED world                                     | ISOLATED world                        | Read title, thumbnail and `<video>` elements on demand                  |
-| UI (popup, sidebar, options) | —                                                  | —                                     | Designed separately; consumes the contract in §2.5                      |
+| Component                    | Firefox                                      | Chromium                              | Responsibility                                                          |
+| ---------------------------- | -------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------- |
+| Background                   | event page                                   | service worker                        | Detection, per-tab state, queue, header rules, delivery via `downloads` |
+| Worker host                  | extension page in an inactive tab (spike #3) | offscreen document (reason `WORKERS`) | Keep the download worker alive                                          |
+| Download worker              | module Web Worker                            | module Web Worker                     | Networking, AES-128 decryption, libav, OPFS writes                      |
+| Content script               | ISOLATED world                               | ISOLATED world                        | Read title, thumbnail and `<video>` elements on demand                  |
+| UI (popup, sidebar, options) | —                                            | —                                     | Designed separately; consumes the contract in §2.5                      |
 
 ### 2.3 Lifecycle risks
 
-- **Chromium:** the service worker is terminated when idle. All state lives in `storage.session`/`storage.local`; the offscreen document keeps the worker and blobs alive while there is work.
-- **Firefox:** the MV3 event page is also suspended. Spike #3 evaluates: (a) a `runtime.Port` held open from an extension page, (b) a dedicated extension page hosting the worker, (c) a persistent MV2 background for Firefox only.
-- The blob handed to `downloads.download` must stay alive until the download completes.
+Both backgrounds are suspended after about 30 s without extension events, and anything they own (including a Web Worker) dies with them. So the download worker never lives in the background. It lives in a **worker host**: an extension document whose lifetime does not depend on the background.
+
+**Decision (spike #3):**
+
+- **One `worker-host` entrypoint** (an HTML page that creates the module Web Worker) serves both browsers. Only the way it is opened differs, and that code lives in `src/platform/`:
+  - **Chromium:** `offscreen.createDocument({ reasons: ['WORKERS'] })`. `WORKERS` has no lifetime limit; only `AUDIO_PLAYBACK` closes after 30 s of silence. One offscreen document per extension.
+  - **Firefox:** `tabs.create({ url: worker-host, active: false })`, plus `autoDiscardable: false` where supported. Firefox has no offscreen API, so the host is a regular extension tab.
+- The host is opened lazily when the first job starts and closed when the queue drains. There must never be more than one host. Find an existing one with `runtime.getContexts` (available on both browsers), and keep a single in-flight `ensureWorkerHost()` promise in the background so two events in the same wake cannot both create one. On Chromium, treat a "document already exists" error from `createDocument` as success.
+- The background stays suspendable. It is woken by the host's `runtime.sendMessage` (progress milestones, completion, errors) and keeps all job state in `storage.session`/`storage.local`. It never relies on in-memory state between events.
+- Ports between the host and the background are **not** a lifetime mechanism. Firefox closes them when the event page suspends. The message bus must treat `onDisconnect` as normal and reconnect on demand.
+- **Firefox only:** if the user closes the host tab, its worker dies with it. `tabs.onRemoved` marks running jobs `paused`, and they resume through the §4.10 path. The host page also registers a `beforeunload` prompt while jobs run, but this is best-effort only: browsers show it just for pages the user interacted with, and the host tab never is. `tabs.onRemoved` is the real mechanism.
+- Offscreen documents only get `runtime` APIs, so the host cannot use `downloads`. The host creates the blob URL and sends it to the background. The background calls `downloads.download` and watches `downloads.onChanged` (which also wakes it). When the download completes or is interrupted, the background tells the host to revoke the URL; once no jobs are running or awaiting delivery, it closes the host (`offscreen.closeDocument` / `tabs.remove`). The blob URL must outlive the download.
+
+**Evidence** (Chromium 156 headless and Firefox 158 headless via `web-ext run`, 2026-10-25). Each variant ran one throwaway probe extension. The module worker fetched 256 KiB chunks from a local server, hashed them with SHA-256 and wrote them to OPFS through `createSyncAccessHandle`, reporting a heartbeat every 10 s to a log endpoint. The background stayed idle during the job. Every 10-minute survivor delivered all 59 heartbeats and about 740 MiB, and its OPFS writes succeeded. Chromium's service-worker state was sampled every 5 s from the DevTools target list without attaching to it.
+
+| Variant                                                                     | Background during job                                                                                             | Worker                  |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| Chromium: offscreen document (`WORKERS`) hosting the worker                 | service worker stopped 30 s after start and stayed stopped for 9 min 26 s; woken by the host's completion message | survived the 10-min job |
+| Firefox: worker owned by the MV3 event page (control)                       | suspended at about 30 s                                                                                           | killed at suspension    |
+| Firefox (a): idle `runtime.Port` from an extension tab                      | suspended at about 30 s; port disconnected                                                                        | killed at suspension    |
+| Firefox (a2): same port, page posts a message every 20 s                    | kept alive by the messages                                                                                        | survived the 10-min job |
+| Firefox (b): extension tab hosting the worker                               | suspended at about 30 s; woken by the host's message                                                              | survived the 10-min job |
+| Firefox (c): MV2 persistent background owning the worker                    | never suspended                                                                                                   | survived the 10-min job |
+| Firefox: event page writes progress to `storage.local` every 5 s            | suspended at about 30 s (`storage.local.set` calls do not reset the idle timer)                                   | killed (60 s run)       |
+| Firefox: event page with `webRequest` listener on the worker's own requests | kept alive while requests were frequent; suspended 30 s after the last one                                        | survived (60 s run)     |
+| Same, but one long streaming `fetch` (single big direct file)               | suspended at about 30 s                                                                                           | killed mid-response     |
+
+**Rejected:**
+
+- **(a) an idle Port.** It does not prevent suspension.
+- **(a2) a pinging Port.** It works, but it still needs an open extension page, so it is strictly worse than (b): two contexts instead of one, plus a keepalive-by-traffic hack.
+- **Implicit keepalive through the extension's own `webRequest` events.** It breaks on a long single response, long `Retry-After` backoff, live playlists with long target durations, and CPU-only phases (final remux, MP3 encode).
+- **(c) a persistent MV2 background.** It works and needs no visible tab, but it forks the Firefox manifest and API surface away from "MV3 everywhere", and Mozilla's MV2 commitment is open-ended rather than permanent. It is the documented **fallback** if the host-tab UX proves unacceptable, or for Firefox for Android, where background tabs are less reliable.
+
+**Not verified by the spike** (check when the host is implemented):
+
+- headed (non-headless) browsers;
+- packaged rather than temporary/unpacked installs;
+- Firefox tab unloading under memory pressure, and whether `autoDiscardable: false` is honored for extension tabs;
+- Firefox for Android;
+- the `beforeunload` prompt in a host tab the user never interacted with (expected not to show);
+- delivering a blob URL created in the host and passed to the background for `downloads.download` (covered by the M0 OPFS + delivery issue).
 
 ### 2.4 Repository layout
 
 ```
-entrypoints/        background, offscreen (Chromium), download-worker, content, popup/sidebar/options
+entrypoints/        background, worker-host, download-worker, content, popup/sidebar/options
 src/
-  messaging/        zod contracts and message bus over runtime.Port
+  messaging/        zod contracts and message bus (runtime.sendMessage wakes the background; runtime.Port for live UI streams, reconnect on disconnect)
   state/            store and migrations
   detection/        network observer, classifiers, MIME types
   manifest/         HLS, DASH, codecs, protection detection
