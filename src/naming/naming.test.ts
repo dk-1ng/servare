@@ -103,6 +103,12 @@ describe('sanitizeSubfolder', () => {
     expect(sanitizeSubfolder('a'.repeat(178) + '.b')).toBe('a'.repeat(178));
   });
 
+  it('keeps the byte cap when a reserved segment gets its prefix', () => {
+    const segment = sanitizeSubfolder('con.ab' + '日'.repeat(100));
+    expect(new TextEncoder().encode(segment).length).toBeLessThanOrEqual(240);
+    expect(segment.startsWith('_con.ab')).toBe(true);
+  });
+
   it('avoids reserved segment names', () => {
     expect(sanitizeSubfolder('nul/x')).toBe('_nul/x');
   });

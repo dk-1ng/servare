@@ -101,9 +101,13 @@ export function sanitizeSubfolder(path: string | undefined): string {
   if (path === undefined) return '';
   return path
     .split(/[/\\]+/)
-    .map((segment) => stripEdges(truncate(cleanSegment(segment), MAX_NAME_LENGTH - 1)))
+    .map((segment) => {
+      const cleaned = cleanSegment(segment);
+      const prefix = isReserved(cleaned) ? 1 : 0;
+      const cut = stripEdges(truncate(cleaned, MAX_NAME_LENGTH - prefix, MAX_NAME_BYTES - prefix));
+      return cut === '' ? '' : avoidReserved(cut);
+    })
     .filter((segment) => segment !== '')
-    .map((segment) => avoidReserved(segment))
     .join('/');
 }
 
