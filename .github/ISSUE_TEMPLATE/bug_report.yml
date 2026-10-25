@@ -1,7 +1,7 @@
 name: Bug report
 description: Something does not work as expected
-title: "fix: "
-labels: ["type: bug", "status: triage"]
+title: 'fix: '
+labels: ['type: bug', 'status: triage']
 body:
   - type: textarea
     id: what
@@ -31,7 +31,7 @@ body:
     id: version
     attributes:
       label: Versions
-      placeholder: "Servare 0.1.0 · Firefox 140"
+      placeholder: 'Servare 0.1.0 · Firefox 140'
   - type: dropdown
     id: media
     attributes:

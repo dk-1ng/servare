@@ -14,6 +14,7 @@ To keep the project legally clean:
 ## Scope
 
 Contributions that do any of the following will not be accepted:
+
 - add YouTube support;
 - circumvent DRM, logins, paywalls, captchas or any technical protection measure;
 - inject or modify JavaScript/DOM on visited pages;

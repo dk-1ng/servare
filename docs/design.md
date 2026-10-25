@@ -7,6 +7,7 @@
 Servare is a browser extension (Firefox and Chromium, Manifest V3) that detects video and audio loaded by the current page and lets the user save it locally. All processing happens inside the browser — there is no native app and no server.
 
 ### 1.1 Scope
+
 - Direct media files (MP4, WebM, MKV, MP3, …).
 - HLS streams (RFC 8216), including the protocol's standard `AES-128` encryption.
 - DASH streams (ISO/IEC 23009-1) without content protection.
@@ -14,6 +15,7 @@ Servare is a browser extension (Firefox and Chromium, Manifest V3) that detects 
 - Alternate audio tracks, subtitles and audio extraction to MP3.
 
 ### 1.2 Non-goals (permanent)
+
 - **YouTube** — not supported, now or later.
 - **DRM-protected content** (Widevine, PlayReady, FairPlay, `SAMPLE-AES`, CENC, etc.). Servare **detects and refuses** it; there is no code path to circumvent DRM.
 - Bypassing login, paywalls, captchas or any other access control.
@@ -22,6 +24,7 @@ Servare is a browser extension (Firefox and Chromium, Manifest V3) that detects 
 - Telemetry or any communication with project-owned servers.
 
 ### 1.3 Principles
+
 1. **Original implementation.** All code is written from public specifications (RFC 8216, ISO/IEC 23009-1, MDN/WebExtensions docs, FFmpeg). See [CONTRIBUTING.md](../CONTRIBUTING.md).
 2. **Read-only on the page.** Content scripts only read metadata; nothing is injected.
 3. **One media pipeline** for every format.
@@ -33,29 +36,33 @@ Servare is a browser extension (Firefox and Chromium, Manifest V3) that detects 
 ## 2. Architecture
 
 ### 2.1 Stack
-| Item | Choice | Rationale |
-|---|---|---|
-| Extension framework | [WXT](https://wxt.dev) + strict TypeScript | Per-browser manifests, unified `browser.*`, HMR |
-| Media engine | [libav.js](https://github.com/Yahweasel/libav.js) (FFmpeg compiled to WebAssembly, LGPL-2.1) | Demux/mux of TS, fMP4, Matroska; subtitles; MP3 |
-| Manifest parsers | `m3u8-parser`, `mpd-parser` | Maintained by the Video.js community, Apache-2.0 |
-| Data validation | zod | Message and state contracts |
-| Testing | Vitest, Playwright, local FFmpeg/ffprobe | Unit, E2E and output verification |
+
+| Item                | Choice                                                                                       | Rationale                                        |
+| ------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Extension framework | [WXT](https://wxt.dev) + strict TypeScript                                                   | Per-browser manifests, unified `browser.*`, HMR  |
+| Media engine        | [libav.js](https://github.com/Yahweasel/libav.js) (FFmpeg compiled to WebAssembly, LGPL-2.1) | Demux/mux of TS, fMP4, Matroska; subtitles; MP3  |
+| Manifest parsers    | `m3u8-parser`, `mpd-parser`                                                                  | Maintained by the Video.js community, Apache-2.0 |
+| Data validation     | zod                                                                                          | Message and state contracts                      |
+| Testing             | Vitest, Playwright, local FFmpeg/ffprobe                                                     | Unit, E2E and output verification                |
 
 ### 2.2 Components
-| Component | Firefox | Chromium | Responsibility |
-|---|---|---|---|
-| Background | event page | service worker | Detection, per-tab state, queue, header rules, delivery via `downloads` |
-| Worker host | background or extension page (decided in spike #3) | offscreen document (reason `WORKERS`) | Keep the download worker alive |
-| Download worker | module Web Worker | module Web Worker | Networking, AES-128 decryption, libav, OPFS writes |
-| Content script | ISOLATED world | ISOLATED world | Read title, thumbnail and `<video>` elements on demand |
-| UI (popup, sidebar, options) | — | — | Designed separately; consumes the contract in §2.5 |
+
+| Component                    | Firefox                                            | Chromium                              | Responsibility                                                          |
+| ---------------------------- | -------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------- |
+| Background                   | event page                                         | service worker                        | Detection, per-tab state, queue, header rules, delivery via `downloads` |
+| Worker host                  | background or extension page (decided in spike #3) | offscreen document (reason `WORKERS`) | Keep the download worker alive                                          |
+| Download worker              | module Web Worker                                  | module Web Worker                     | Networking, AES-128 decryption, libav, OPFS writes                      |
+| Content script               | ISOLATED world                                     | ISOLATED world                        | Read title, thumbnail and `<video>` elements on demand                  |
+| UI (popup, sidebar, options) | —                                                  | —                                     | Designed separately; consumes the contract in §2.5                      |
 
 ### 2.3 Lifecycle risks
+
 - **Chromium:** the service worker is terminated when idle. All state lives in `storage.session`/`storage.local`; the offscreen document keeps the worker and blobs alive while there is work.
 - **Firefox:** the MV3 event page is also suspended. Spike #3 evaluates: (a) a `runtime.Port` held open from an extension page, (b) a dedicated extension page hosting the worker, (c) a persistent MV2 background for Firefox only.
 - The blob handed to `downloads.download` must stay alive until the download completes.
 
 ### 2.4 Repository layout
+
 ```
 entrypoints/        background, offscreen (Chromium), download-worker, content, popup/sidebar/options
 src/
@@ -76,35 +83,65 @@ docs/               this document and the UI contract
 ```
 
 ### 2.5 Data model (UI contract)
+
 ```ts
 type MediaKind = 'direct' | 'hls' | 'dash';
 
 interface MediaItem {
-  id: string; tabId: number; kind: MediaKind;
-  url: string; pageUrl: string; title: string; thumbnail?: string;
+  id: string;
+  tabId: number;
+  kind: MediaKind;
+  url: string;
+  pageUrl: string;
+  title: string;
+  thumbnail?: string;
   duration: number | 'live';
-  variants: Variant[]; audioTracks: Track[]; subtitles: Track[];
-  protected: boolean;            // DRM detected → not downloadable
+  variants: Variant[];
+  audioTracks: Track[];
+  subtitles: Track[];
+  protected: boolean; // DRM detected → not downloadable
   detectedAt: number;
 }
 
-interface Variant { id: string; width?: number; height?: number; bandwidth?: number; codecs?: string; container: string }
-interface Track   { id: string; language?: string; label?: string; codecs?: string }
+interface Variant {
+  id: string;
+  width?: number;
+  height?: number;
+  bandwidth?: number;
+  codecs?: string;
+  container: string;
+}
+interface Track {
+  id: string;
+  language?: string;
+  label?: string;
+  codecs?: string;
+}
 
 interface DownloadJob {
-  id: string; mediaId: string; variantId?: string;
-  audioTrackIds: string[]; subtitleIds: string[];
+  id: string;
+  mediaId: string;
+  variantId?: string;
+  audioTrackIds: string[];
+  subtitleIds: string[];
   mode: 'video' | 'audio';
   status: 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
-  progress: number | 'indeterminate'; bytesWritten: number;
-  error?: DownloadError; outputName: string;
+  progress: number | 'indeterminate';
+  bytesWritten: number;
+  error?: DownloadError;
+  outputName: string;
 }
 
 type DownloadError =
-  | { kind: 'cancelled' } | { kind: 'http'; status: number }
-  | { kind: 'incomplete'; ratio: number } | { kind: 'decrypt' }
-  | { kind: 'quota' } | { kind: 'protected' } | { kind: 'unknown'; message: string };
+  | { kind: 'cancelled' }
+  | { kind: 'http'; status: number }
+  | { kind: 'incomplete'; ratio: number }
+  | { kind: 'decrypt' }
+  | { kind: 'quota' }
+  | { kind: 'protected' }
+  | { kind: 'unknown'; message: string };
 ```
+
 Message details live in `docs/ui-contract.md` (issue #12).
 
 ---
@@ -112,17 +149,20 @@ Message details live in `docs/ui-contract.md` (issue #12).
 ## 3. Detection
 
 ### 3.1 Network observation
+
 1. `webRequest.onSendHeaders` stores the headers sent per request (TTL cache). Chromium needs `extraHeaders` to see `Cookie`/`Referer`.
 2. `webRequest.onResponseStarted` evaluates the response. Discarded: non-2xx status, non-HTTP schemes, the extension's own requests, requests without a tab, stream fragments (segment `.ts`, `.m4s`, `.aac`) and domains with detection disabled.
 3. Classification order: **HLS → DASH → direct file**.
 
 ### 3.2 Direct files
+
 - Trigger: request type `media`, or a recognized `video/*`/`audio/*` `Content-Type` (own table in `src/detection/mime.ts`, based on the IANA registry).
 - Default minimum size: **1 MiB** (configurable per domain), read from `Content-Length` or the `Content-Range` total.
 - Resumable when `Accept-Ranges: bytes`.
 - Suggested name: `Content-Disposition` → URL path → MIME type.
 
 ### 3.3 Manifests
+
 - The manifest is fetched again with the same headers to confirm the type from its content.
 - **HLS master:** variants (`RESOLUTION`, `BANDWIDTH`, `CODECS`), `EXT-X-MEDIA` audio and subtitles. Variants with unknown codecs are hidden.
 - **HLS media:** duration (sum of `EXTINF`), `EXT-X-KEY`, `EXT-X-MAP`, `EXT-X-BYTERANGE`. Live = no `EXT-X-ENDLIST`.
@@ -130,13 +170,16 @@ Message details live in `docs/ui-contract.md` (issue #12).
 - **Quality ordering:** height, then bitrate.
 
 ### 3.4 Protected content
+
 The item is flagged `protected: true` and shown as unavailable when there is:
+
 - `ContentProtection` in DASH (any `schemeIdUri`);
 - `EXT-X-KEY`/`EXT-X-SESSION-KEY` with a method other than `NONE` and `AES-128`, or a `KEYFORMAT` other than `identity`.
 
 There is no attempt to obtain licenses, CDM keys or equivalents.
 
 ### 3.5 Per-tab list
+
 - Cleared on `webNavigation.onBeforeNavigate` and `tabs.onRemoved`.
 - Deduplicated by normalized URL (volatile query parameters removed).
 - When the tab has an HLS/DASH manifest, small direct files and standalone media playlists are hidden by default (usually fragments or ads).
@@ -148,25 +191,30 @@ There is no attempt to obtain licenses, CDM keys or equivalents.
 ## 4. Download
 
 ### 4.1 Preparation
+
 1. Check `protected`, available space (`navigator.storage.estimate()`) and create the job.
 2. **Header compatibility:** many servers require the same `Referer`/`Origin`/`Cookie` the player sent (hotlink protection). Servare creates session `declarativeNetRequest` rules that reapply those values **only to the extension's own requests** (`tabIds: [-1]` and/or `initiatorDomains`), never to page traffic. Rules are removed when the job ends (`finally`), and orphaned rules are cleared on startup.
 3. Send the job to the worker.
 
 ### 4.2 Networking
+
 - Streaming `fetch`, per-host semaphore, exponential backoff with jitter, honoring `429`/`Retry-After`.
 - **Speed profiles** (per-domain default, configurable):
 
-| Profile | Behavior |
-|---|---|
-| Economy | 1 connection, sequential order, pace close to playback |
-| Standard | up to 4 connections per host |
-| Fast | up to 8 connections; direct files with `Accept-Ranges` split into parallel ranges |
+| Profile  | Behavior                                                                          |
+| -------- | --------------------------------------------------------------------------------- |
+| Economy  | 1 connection, sequential order, pace close to playback                            |
+| Standard | up to 4 connections per host                                                      |
+| Fast     | up to 8 connections; direct files with `Accept-Ranges` split into parallel ranges |
 
 ### 4.3 AES-128 (HLS)
+
 Per RFC 8216 §5.2: key fetched from the `EXT-X-KEY` URI (with the player's headers), AES-CBC via WebCrypto, explicit IV or derived from the segment's media sequence number. Keys cached by URI for the duration of the job.
 
 ### 4.4 Remux
+
 A single pipeline on top of the libav.js API:
+
 1. each segment (or the whole file) is demuxed into packets;
 2. timestamps are rewritten for continuity across segments;
 3. packets are muxed into a write device backed by OPFS.
@@ -174,24 +222,30 @@ A single pipeline on top of the libav.js API:
 **Container by codec:** H.264/H.265 + AAC → MP4; VP9/AV1/Opus/Vorbis → MKV (or WebM when every track is compatible). Subtitles: `mov_text` in MP4, WebVTT in MKV.
 
 ### 4.5 Live
+
 Reload the playlist every `EXT-X-TARGETDURATION / 2`, append only new segments, stop on user action or after several reloads with nothing new. Indeterminate progress.
 
 ### 4.6 Audio
+
 Alternate tracks are downloaded in parallel and muxed with language metadata. "Audio only" mode decodes, resamples to 44.1 kHz and encodes MP3 (`libmp3lame`, VBR, configurable quality).
 
 ### 4.7 Subtitles
+
 WebVTT, SRT and TTML from HLS/DASH: embedded in the container or saved as a separate file.
 
 ### 4.8 Robustness and validation
+
 - Segments that still fail after retries are skipped, except the first; above **20%** failures the job is aborted (configurable).
 - Output validation: empty file = failure; duration below **97%** of the expected = `incomplete`.
 
 ### 4.9 Writing and delivery
+
 - Positional writes to OPFS with `createSyncAccessHandle` (the file is never held in memory; `unlimitedStorage`).
 - At the end: `File` → blob URL → `downloads.download` (`conflictAction: 'uniquify'`, optional "save as"). On Chromium the name is enforced via `downloads.onDeterminingFilename`.
 - After completion: the temporary file is removed and the blob URL revoked.
 
 ### 4.10 Queue, pause and resume
+
 Jobs and the indexes of completed segments are persisted. Downloads resume after a browser restart (HLS/DASH per segment; direct files via `Range`).
 
 ---
@@ -215,17 +269,18 @@ File `src/rules/default-rules.json`, validated by zod and editable in the option
   "version": 1,
   "domains": {
     "example.com": {
-      "detection": true,          // disable detection on the domain
-      "minDirectSize": 1048576,   // bytes
-      "propagateQuery": false,    // copy the manifest query string to segments
-      "audioOnly": false,         // treat streams as audio
-      "feedMode": false,          // rolling list for infinite-scroll sites
-      "hideFragments": true,      // hide fragments when a manifest exists
-      "speedProfile": "standard"  // economy | standard | fast
-    }
-  }
+      "detection": true, // disable detection on the domain
+      "minDirectSize": 1048576, // bytes
+      "propagateQuery": false, // copy the manifest query string to segments
+      "audioOnly": false, // treat streams as audio
+      "feedMode": false, // rolling list for infinite-scroll sites
+      "hideFragments": true, // hide fragments when a manifest exists
+      "speedProfile": "standard", // economy | standard | fast
+    },
+  },
 }
 ```
+
 Rules match the domain and its subdomains. Rules are never downloaded remotely.
 
 ---
@@ -248,14 +303,14 @@ Licensing: libav.js/FFmpeg and LAME are LGPL-2.1. The repository keeps the build
 
 ## 9. Milestones
 
-| Milestone | Deliverable | Done when |
-|---|---|---|
-| **M0 — Foundation** | Scaffold, CI, messaging, state, lifecycle and header spikes, OPFS writes + delivery | A 2 GB synthetic file is saved on both browsers; the worker survives 10 min |
-| **M1 — Direct files** | Detection, per-tab list, download with page headers, naming, rules, history | An MP4 protected by Referer + cookie downloads on both browsers |
-| **M2 — HLS** | libav.js, parser, protection detection, AES-128, fetcher, remux, alternate audio, validation, resumable queue | HLS with AES-128 and separate audio → synchronized MP4 |
-| **M3 — DASH** | Parser and video + audio download | H.264/AAC → MP4 and VP9/Opus → MKV |
-| **M4 — Live, subtitles & audio** | Live HLS, subtitles, MP3, manual page scan | Live recorded for 5 min; subtitles visible; valid MP3 |
-| **M5 — Evolution** | Mirror mode, parallel ranges, options, site extractors, preview, shortcuts, releases | — |
+| Milestone                        | Deliverable                                                                                                   | Done when                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **M0 — Foundation**              | Scaffold, CI, messaging, state, lifecycle and header spikes, OPFS writes + delivery                           | A 2 GB synthetic file is saved on both browsers; the worker survives 10 min |
+| **M1 — Direct files**            | Detection, per-tab list, download with page headers, naming, rules, history                                   | An MP4 protected by Referer + cookie downloads on both browsers             |
+| **M2 — HLS**                     | libav.js, parser, protection detection, AES-128, fetcher, remux, alternate audio, validation, resumable queue | HLS with AES-128 and separate audio → synchronized MP4                      |
+| **M3 — DASH**                    | Parser and video + audio download                                                                             | H.264/AAC → MP4 and VP9/Opus → MKV                                          |
+| **M4 — Live, subtitles & audio** | Live HLS, subtitles, MP3, manual page scan                                                                    | Live recorded for 5 min; subtitles visible; valid MP3                       |
+| **M5 — Evolution**               | Mirror mode, parallel ranges, options, site extractors, preview, shortcuts, releases                          | —                                                                           |
 
 ---
 
