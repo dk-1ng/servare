@@ -6,9 +6,12 @@ function memoryArea(): StorageAreaLike & { data: Record<string, unknown> } {
   const data: Record<string, unknown> = {};
   return {
     data,
-    get: (key) => Promise.resolve(key in data ? { [key]: structuredClone(data[key]) } : {}),
+    get: (key) =>
+      Promise.resolve(
+        key in data ? { [key]: JSON.parse(JSON.stringify(data[key])) as unknown } : {},
+      ),
     set: (items) => {
-      Object.assign(data, structuredClone(items));
+      Object.assign(data, JSON.parse(JSON.stringify(items)) as Record<string, unknown>);
       return Promise.resolve();
     },
     remove: (key) => {
@@ -105,6 +108,21 @@ describe('createStore', () => {
       },
     });
     expect(await store.get()).toEqual({ items: [] });
+  });
+
+  it('keeps a copy of unreadable data before overwriting it', async () => {
+    const area = memoryArea();
+    const newer = { v: 3, data: { items: [{ name: 'a', pinned: true }] } };
+    area.data['list'] = newer;
+    await createStore(optionsV2(area)).update((cur) => cur);
+    expect(area.data['list:unreadable']).toEqual(newer);
+    expect(area.data['list']).toEqual({ v: 2, data: { items: [] } });
+  });
+
+  it('returns the defaults when the storage area rejects', async () => {
+    const area = memoryArea();
+    area.get = () => Promise.reject(new Error('backend down'));
+    expect(await createStore(optionsV2(area)).get()).toEqual({ items: [] });
   });
 
   it('rejects writes that do not match the schema', async () => {

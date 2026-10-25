@@ -13,6 +13,7 @@ export type Migration = (data: unknown) => unknown;
 export interface StoreOptions<S extends z.ZodType> {
   area: StorageAreaLike;
   key: string;
+  /** Must be JSON-serializable: Chromium's storage drops `Date`, `Map`, `Set` and `undefined`. */
   schema: S;
   /** Current schema version, starting at 1. */
   version: number;
@@ -63,11 +64,12 @@ export function migrate(
 }
 
 export interface Store<T> {
-  /** Reads, migrates and validates. Never throws: unreadable data yields the defaults. */
+  /** Reads, migrates and validates. Never throws: a failing or unreadable storage area yields the defaults. */
   get(): Promise<T>;
   set(value: T): Promise<void>;
   /** Read-modify-write, serialized with other writes from this context. */
   update(fn: (current: T) => T): Promise<T>;
+  /** Removes the value and any unreadable backup. */
   clear(): Promise<void>;
 }
 
@@ -79,6 +81,7 @@ export interface Store<T> {
 export function createStore<S extends z.ZodType>(options: StoreOptions<S>): Store<z.infer<S>> {
   type T = z.infer<S>;
   const { area, key, schema, version, migrations = {}, defaults } = options;
+  const backupKey = `${key}:unreadable`;
   let queue: Promise<unknown> = Promise.resolve();
 
   const serialize = <R>(task: () => Promise<R>): Promise<R> => {
@@ -87,29 +90,50 @@ export function createStore<S extends z.ZodType>(options: StoreOptions<S>): Stor
     return run;
   };
 
-  async function read(): Promise<T> {
-    const raw = (await area.get(key))[key];
-    if (!isEnvelope(raw)) return defaults();
-    const migrated = migrate(raw.data, raw.v, version, migrations);
-    if (migrated === undefined) return defaults();
-    const parsed = schema.safeParse(migrated);
-    return parsed.success ? parsed.data : defaults();
+  /** `unreadable` carries the raw stored value when it exists but could not be used. */
+  async function load(): Promise<{ value: T; unreadable?: unknown }> {
+    let raw: unknown;
+    try {
+      raw = (await area.get(key))[key];
+    } catch {
+      return { value: defaults() };
+    }
+    if (raw === undefined) return { value: defaults() };
+    if (isEnvelope(raw)) {
+      const migrated = migrate(raw.data, raw.v, version, migrations);
+      if (migrated !== undefined) {
+        const parsed = schema.safeParse(migrated);
+        if (parsed.success) return { value: parsed.data };
+      }
+    }
+    return { value: defaults(), unreadable: raw };
   }
 
-  async function write(value: T): Promise<void> {
+  /** Overwriting unreadable data (newer build, bad schema) keeps a copy under `<key>:unreadable`. */
+  async function write(value: T, unreadable: unknown): Promise<void> {
     const data = schema.parse(value);
-    await area.set({ [key]: { v: version, data } satisfies Envelope });
+    const items: Record<string, unknown> = { [key]: { v: version, data } satisfies Envelope };
+    if (unreadable !== undefined) items[backupKey] = unreadable;
+    await area.set(items);
   }
 
   return {
-    get: () => read(),
-    set: (value) => serialize(() => write(value)),
+    get: async () => (await load()).value,
+    set: (value) =>
+      serialize(async () => {
+        await write(value, (await load()).unreadable);
+      }),
     update: (fn) =>
       serialize(async () => {
-        const next = fn(await read());
-        await write(next);
+        const { value, unreadable } = await load();
+        const next = fn(value);
+        await write(next, unreadable);
         return next;
       }),
-    clear: () => serialize(() => area.remove(key)),
+    clear: () =>
+      serialize(async () => {
+        await area.remove(key);
+        await area.remove(backupKey);
+      }),
   };
 }
