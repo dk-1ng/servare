@@ -49,6 +49,16 @@ describe('rulesFor', () => {
     expect(rulesFor('WWW.Example.COM.', rules).minDirectSize).toBe(5);
   });
 
+  it('does not apply suffix inheritance to IP addresses', () => {
+    const ip = parseRules({
+      version: 1,
+      domains: { '0.1': { detection: false }, '192.168.0.1': { audioOnly: true } },
+    });
+    expect(rulesFor('10.0.0.1', ip)).toEqual(DEFAULT_DOMAIN_RULES);
+    expect(rulesFor('192.168.0.1', ip).audioOnly).toBe(true);
+    expect(rulesFor('192.168.0.1', ip).detection).toBe(true);
+  });
+
   it('is not fooled by prototype keys', () => {
     expect(rulesFor('constructor', rules)).toEqual(DEFAULT_DOMAIN_RULES);
     expect(rulesFor('__proto__', rules)).toEqual(DEFAULT_DOMAIN_RULES);

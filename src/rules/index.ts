@@ -48,6 +48,8 @@ const DomainRulesSchema = z
 /** A bare lowercase host name: what `URL.hostname` returns, so a rule key can be compared as is. */
 const DOMAIN_KEY = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))*$/;
 
+const IP_LITERAL = /^(\d+\.){3}\d+$|^\[.*\]$/;
+
 export const RulesFileSchema = z
   .object({
     version: z.literal(1),
@@ -73,10 +75,13 @@ export const defaultRules: RulesFile = parseRules(defaultRulesFile);
  * back to {@link DEFAULT_DOMAIN_RULES}.
  */
 export function rulesFor(hostname: string, rules: RulesFile = defaultRules): DomainRules {
-  const labels = hostname.toLowerCase().replace(/\.$/, '').split('.');
+  const name = hostname.toLowerCase().replace(/\.$/, '');
+  const labels = name.split('.');
   const result: DomainRules = { ...DEFAULT_DOMAIN_RULES };
+  // An IP address has no parent domain: `0.1` must not match `192.168.0.1`.
+  const last = IP_LITERAL.test(name) ? 0 : labels.length - 1;
   // From the broadest suffix (`com`) down to the full host name, so the most specific wins.
-  for (let i = labels.length - 1; i >= 0; i--) {
+  for (let i = last; i >= 0; i--) {
     const own = Object.hasOwn(rules.domains, labels.slice(i).join('.'))
       ? rules.domains[labels.slice(i).join('.')]
       : undefined;
