@@ -12,7 +12,8 @@ export interface HeaderEntry {
   headers: CapturedHeaders;
   /** Firefox container, recorded so a job never mixes cookie stores (design §4.1.1). */
   cookieStoreId?: string;
-  incognito: boolean;
+  /** Only Firefox reports it on `webRequest`; unknown on Chromium, so resolve it from the tab. */
+  incognito?: boolean;
   capturedAt: number;
 }
 
@@ -33,6 +34,8 @@ const key = (tabId: number, origin: string): string => `${String(tabId)} ${origi
 /**
  * Latest player headers per (tab, exact origin), with a TTL (design §3.1, §4.1.1). Memory is
  * authoritative while the background is awake; `persist`/`restore` carry it across suspension.
+ * `get` is synchronous and never restores: a reader that may run right after a wake-up must
+ * `await restore()` first, or it sees an empty cache.
  */
 export class HeaderCache {
   private readonly entries = new Map<string, HeaderEntry>();
@@ -41,6 +44,9 @@ export class HeaderCache {
   private readonly now: () => number;
   private readonly options: HeaderCacheOptions;
   private restored: Promise<void> | undefined;
+  private readonly clearedTabs = new Set<number>();
+  /** `capturedAt` of each entry as last written by `persist`, to refresh the saved copy's TTL. */
+  private readonly persistedAt = new Map<string, number>();
   private flushing = false;
   private dirty = false;
 
@@ -56,12 +62,10 @@ export class HeaderCache {
     const previous = this.entries.get(k);
     this.entries.delete(k); // re-insert so Map order stays oldest-first
     this.entries.set(k, { ...entry, capturedAt: this.now() });
-    while (this.entries.size > this.maxEntries) {
-      const oldest = this.entries.keys().next();
-      if (oldest.done) break;
-      this.entries.delete(oldest.value);
-    }
-    if (!previous || !sameHeaders(previous, entry)) this.markDirty();
+    this.prune();
+    // A saved copy keeps its old `capturedAt` unless refreshed, and would expire after a suspension.
+    const stale = this.now() - (this.persistedAt.get(k) ?? 0) > this.ttlMs / 10;
+    if (!previous || !sameHeaders(previous, entry) || stale) this.markDirty();
   }
 
   /** Most recent fresh capture for this tab and origin. */
@@ -76,14 +80,13 @@ export class HeaderCache {
   }
 
   clearTab(tabId: number): void {
-    let changed = false;
+    // Remembered so that a restore still pending (or a saved copy never loaded) cannot bring the
+    // tab's cookies back.
+    this.clearedTabs.add(tabId);
     for (const [k, entry] of this.entries) {
-      if (entry.tabId === tabId) {
-        this.entries.delete(k);
-        changed = true;
-      }
+      if (entry.tabId === tabId) this.entries.delete(k);
     }
-    if (changed) this.markDirty();
+    this.markDirty();
   }
 
   get size(): number {
@@ -94,13 +97,31 @@ export class HeaderCache {
   restore(): Promise<void> {
     this.restored ??= (async () => {
       const saved = (await this.options.restore?.()) ?? [];
-      const cutoff = this.now() - this.ttlMs;
       for (const entry of saved) {
         const k = key(entry.tabId, entry.origin);
-        if (entry.capturedAt >= cutoff && !this.entries.has(k)) this.entries.set(k, entry);
+        if (this.clearedTabs.has(entry.tabId) || this.entries.has(k)) continue;
+        this.entries.set(k, entry);
+        this.persistedAt.set(k, entry.capturedAt);
       }
+      this.prune();
     })().catch(() => undefined);
     return this.restored;
+  }
+
+  /** Drops expired entries, then the oldest ones beyond `maxEntries`. */
+  private prune(): void {
+    const cutoff = this.now() - this.ttlMs;
+    for (const [k, entry] of this.entries) {
+      if (entry.capturedAt < cutoff) this.entries.delete(k);
+    }
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (oldest.done) break;
+      this.entries.delete(oldest.value);
+    }
+    for (const k of this.persistedAt.keys()) {
+      if (!this.entries.has(k)) this.persistedAt.delete(k);
+    }
   }
 
   private markDirty(): void {
@@ -115,7 +136,10 @@ export class HeaderCache {
       while (this.dirty) {
         this.dirty = false;
         await this.restore();
-        await this.options.persist?.([...this.entries.values()]);
+        this.prune();
+        const snapshot = [...this.entries.entries()];
+        await this.options.persist?.(snapshot.map(([, entry]) => entry));
+        for (const [k, entry] of snapshot) this.persistedAt.set(k, entry.capturedAt);
       }
     } catch {
       // Losing the saved copy only costs headers after a suspension; the next change retries.

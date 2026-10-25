@@ -153,13 +153,11 @@ describe('HeaderCache', () => {
       tabId: 1,
       origin: 'https://a.com',
       headers: { cookie: 'x=1' },
-      incognito: false,
     });
     cache.record({
       tabId: 1,
       origin: 'https://a.com',
       headers: { cookie: 'x=2' },
-      incognito: false,
     });
     cache.record({
       tabId: 2,
@@ -176,7 +174,7 @@ describe('HeaderCache', () => {
   it('evicts the oldest entries and clears a tab', () => {
     const cache = new HeaderCache({ maxEntries: 2 });
     for (const o of ['https://a', 'https://b', 'https://c'])
-      cache.record({ tabId: 1, origin: o, headers: {}, incognito: false });
+      cache.record({ tabId: 1, origin: o, headers: {} });
     expect(cache.get(1, 'https://a')).toBeUndefined();
     expect(cache.size).toBe(2);
     cache.clearTab(1);
@@ -186,13 +184,102 @@ describe('HeaderCache', () => {
   it('persists changes and restores them without overriding newer memory', async () => {
     const saved: HeaderEntry[][] = [];
     const first = new HeaderCache({ persist: async (e) => void saved.push(e) });
-    first.record({ tabId: 1, origin: 'https://a', headers: { referer: 'r' }, incognito: false });
+    first.record({ tabId: 1, origin: 'https://a', headers: { referer: 'r' } });
     await new Promise((r) => setTimeout(r, 0));
     expect(saved.at(-1)).toHaveLength(1);
     const second = new HeaderCache({ restore: async () => saved.at(-1) ?? [] });
-    second.record({ tabId: 1, origin: 'https://a', headers: { referer: 'new' }, incognito: false });
+    second.record({ tabId: 1, origin: 'https://a', headers: { referer: 'new' } });
     await second.restore();
     expect(second.get(1, 'https://a')?.headers.referer).toBe('new');
+  });
+});
+
+describe('HeaderCache across suspension', () => {
+  const entry = (tabId: number, origin: string, capturedAt = 0): HeaderEntry => ({
+    tabId,
+    origin,
+    headers: { cookie: 'c' },
+    capturedAt,
+  });
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it('does not bring a cleared tab back from the saved copy', async () => {
+    let saved = [entry(5, 'https://a'), entry(5, 'https://b'), entry(6, 'https://a')];
+    const cache = new HeaderCache({
+      now: () => 0,
+      restore: async () => saved,
+      persist: async (e) => {
+        saved = e;
+      },
+    });
+    cache.record({ tabId: 5, origin: 'https://a', headers: { cookie: 'new' } });
+    cache.clearTab(5);
+    await tick();
+    await cache.restore();
+    expect(cache.get(5, 'https://a')).toBeUndefined();
+    expect(cache.get(5, 'https://b')).toBeUndefined();
+    expect(cache.get(6, 'https://a')).toBeDefined();
+    expect(saved.map((e) => e.tabId)).toEqual([6]);
+  });
+
+  it('clears a saved tab even when nothing was in memory', async () => {
+    let saved = [entry(5, 'https://a')];
+    const cache = new HeaderCache({
+      now: () => 0,
+      restore: async () => saved,
+      persist: async (e) => {
+        saved = e;
+      },
+    });
+    cache.clearTab(5);
+    await tick();
+    expect(saved).toEqual([]);
+  });
+
+  it('refreshes the saved copy so a steady stream does not expire after a suspension', async () => {
+    let t = 0;
+    let saved: HeaderEntry[] = [];
+    const cache = new HeaderCache({
+      ttlMs: 1000,
+      now: () => t,
+      persist: async (e) => {
+        saved = e;
+      },
+    });
+    const same = { tabId: 1, origin: 'https://a', headers: { cookie: 'c' } };
+    cache.record(same);
+    await tick();
+    t = 600;
+    cache.record(same);
+    await tick();
+    expect(saved[0]?.capturedAt).toBe(600);
+  });
+
+  it('prunes expired and excess entries on restore', async () => {
+    const cache = new HeaderCache({
+      ttlMs: 1000,
+      maxEntries: 1,
+      now: () => 1500,
+      restore: async () => [
+        entry(1, 'https://old', 100),
+        entry(1, 'https://a', 1400),
+        entry(1, 'https://b', 1450),
+      ],
+    });
+    await cache.restore();
+    expect(cache.size).toBe(1);
+    expect(cache.get(1, 'https://b')).toBeDefined();
+  });
+
+  it('leaves incognito unknown when the browser does not report it', () => {
+    const cache = new HeaderCache();
+    const observer = createObserver({
+      ownOrigin: OWN,
+      headerCache: cache,
+      onDetect: () => undefined,
+    });
+    observer.onSendHeaders({ tabId: 1, frameId: 0, type: 'media', url: 'https://a.com/x' });
+    expect(cache.get(1, 'https://a.com')?.incognito).toBeUndefined();
   });
 });
 

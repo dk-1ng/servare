@@ -102,7 +102,7 @@ export function createObserver(options: ObserverOptions) {
           ...(sent['cookie'] !== undefined && { cookie: sent['cookie'] }),
         },
         ...(details.cookieStoreId !== undefined && { cookieStoreId: details.cookieStoreId }),
-        incognito: details.incognito ?? false,
+        ...(details.incognito !== undefined && { incognito: details.incognito }),
       });
     },
 
