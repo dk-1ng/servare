@@ -69,11 +69,16 @@ function renderMedia(): void {
     const reason = unavailableReason(item);
     const [li] = row(item.title || item.url, reason ?? `${item.kind} · ${item.url}`);
     if (!reason) {
-      li.append(
-        button('Download', () => {
-          void download(item);
-        }),
-      );
+      const start = button('Download', () => {
+        // One click, one job: the button stays off until the request settles.
+        start.disabled = true;
+        download(item)
+          .finally(() => {
+            start.disabled = false;
+          })
+          .catch(failure);
+      });
+      li.append(start);
     }
     mediaList.append(li);
   }
