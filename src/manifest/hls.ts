@@ -142,7 +142,7 @@ function parseKey(list: string, base: string): KeyInfo {
   const keyFormat = attrs['KEYFORMAT'] ?? 'identity';
   // Fail closed: if any entry was lost, KEYFORMAT may have been among them.
   const protectedKey =
-    method !== 'NONE' && (method !== 'AES-128' || keyFormat !== 'identity' || skipped);
+    skipped || (method !== 'NONE' && (method !== 'AES-128' || keyFormat !== 'identity'));
   const key: KeyInfo = { method, keyFormat, protected: protectedKey };
   if (method !== 'NONE' && attrs['URI'] !== undefined && !protectedKey) {
     key.uri = resolve(attrs['URI'], base);

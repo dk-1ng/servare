@@ -222,6 +222,13 @@ describe('attribute edge cases', () => {
     expect(p.protected).toBe(true);
   });
 
+  it('treats a repeated METHOD as protected even if the last one is NONE', () => {
+    const p = media(
+      '#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="k",METHOD=NONE\n#EXTINF:1,\na.ts\n#EXT-X-ENDLIST',
+    );
+    expect(p.protected).toBe(true);
+  });
+
   it('accepts spaces after commas', () => {
     expect(parseAttributes('METHOD=AES-128, URI="k"')).toEqual({ METHOD: 'AES-128', URI: 'k' });
   });
