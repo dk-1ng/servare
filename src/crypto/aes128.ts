@@ -62,7 +62,11 @@ export class KeyCache {
     if (raw.byteLength !== KEY_BYTES) {
       throw new DecryptError(`AES-128 key must be 16 bytes, got ${String(raw.byteLength)}`);
     }
-    return crypto.subtle.importKey('raw', raw, 'AES-CBC', false, ['decrypt']);
+    try {
+      return await crypto.subtle.importKey('raw', raw, 'AES-CBC', false, ['decrypt']);
+    } catch (e) {
+      throw new DecryptError('Could not import the decryption key', { cause: e });
+    }
   }
 }
 
