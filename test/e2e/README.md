@@ -27,6 +27,11 @@ What it checks, per browser (issue #6):
    (`Content-Disposition: attachment`) leave the list alone; navigating the tab empties its
    list, and a media response the old page asked for just before leaving does not bring it
    back; a media file opened in the tab is listed; closing the tab removes its entry.
+8. Remux (issue #17): `download/start-direct` with `remux: 'mp4'` on a fixture MPEG-TS segment
+   makes the worker load libav.js from the package and stream-copy it into an MP4; `ffprobe`
+   must report H.264 + AAC lasting 2 s, `ffmpeg -xerror` must decode it without errors, and
+   OPFS `servare-tmp` must be empty afterwards. Needs `ffprobe`/`ffmpeg` and the fixtures
+   (`pnpm fixtures`).
 
 How it works: `puppeteer-core` (no bundled browser) drives Chromium over CDP and Firefox over
 WebDriver BiDi, with isolated temporary profiles and download directories under the OS temp

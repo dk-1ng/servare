@@ -1,0 +1,30 @@
+name: libav.js build
+
+# Rebuilds the libav.js variant from its pinned sources and fails unless the result is
+# byte-identical to the committed vendor/libav/dist/ (docs/design.md §8).
+on:
+  push:
+    branches: [main]
+    paths: ['vendor/libav/**', '.github/workflows/libav.yml']
+  pull_request:
+    paths: ['vendor/libav/**', '.github/workflows/libav.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: libav-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Reproduce the libav.js build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Rebuild and compare with dist/SHA256SUMS
+        run: bash vendor/libav/build.sh --check

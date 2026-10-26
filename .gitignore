@@ -3,6 +3,8 @@ node_modules/
 .output/
 .wxt/
 dist/
+# The libav.js build is committed (docs/design.md §8).
+!vendor/libav/dist/
 web-ext-artifacts/
 
 # Tests

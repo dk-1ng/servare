@@ -24,7 +24,9 @@
     "lint:firefox": "web-ext lint -s .output/firefox-mv3",
     "fixtures": "bash test/fixtures/make.sh",
     "test:server": "node test/server/cli.ts",
-    "test:e2e": "pnpm build && node test/e2e/run.ts"
+    "test:e2e": "pnpm build && node test/e2e/run.ts",
+    "libav:build": "bash vendor/libav/build.sh",
+    "libav:check": "bash vendor/libav/build.sh --check"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

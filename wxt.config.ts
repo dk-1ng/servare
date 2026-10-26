@@ -1,4 +1,14 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { defineConfig } from 'wxt';
+
+/** The libav.js build (design §8): exactly the files listed in its SHA256SUMS. */
+const LIBAV_DIST = path.resolve(import.meta.dirname, 'vendor/libav/dist');
+const libavFiles = (): string[] =>
+  readFileSync(path.join(LIBAV_DIST, 'SHA256SUMS'), 'utf8')
+    .split('\n')
+    .map((line) => /^[0-9a-f]{64} [ *](.+)$/.exec(line)?.[1])
+    .filter((name): name is string => name !== undefined);
 
 // See docs/design.md §2 for the architecture behind these settings.
 export default defineConfig({
@@ -7,6 +17,14 @@ export default defineConfig({
   targetBrowsers: ['chrome', 'firefox'],
   // Firefox defaults to MV2 in WXT; Servare targets MV3 everywhere.
   manifestVersion: 3,
+  hooks: {
+    // Package files reached only by extension pages and the worker: no web_accessible_resources.
+    'build:publicAssets': (_wxt, files) => {
+      for (const name of libavFiles()) {
+        files.push({ absoluteSrc: path.join(LIBAV_DIST, name), relativeDest: `libav/${name}` });
+      }
+    },
+  },
   manifest: ({ browser }) => ({
     name: 'Servare',
     description:

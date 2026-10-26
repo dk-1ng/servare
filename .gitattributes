@@ -4,3 +4,5 @@
 *.webm binary
 *.ts linguist-language=TypeScript
 test/fixtures/** linguist-generated
+# Build output (vendor/libav/build.sh): byte-exact, never normalized or diffed.
+vendor/libav/dist/libav-* -text -diff linguist-vendored

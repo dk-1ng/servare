@@ -328,7 +328,7 @@ type HeaderMap = Parameters<HeaderReplay['apply']>[1];
 const handlers: Partial<Handlers> = {
   'media/list': ({ tabId }) => tabList.items(tabId),
   // Temporary development/E2E trigger; see 'download/start-direct' in the protocol.
-  'download/start-direct': async ({ url, filename, tabId }) => {
+  'download/start-direct': async ({ url, filename, tabId, remux }) => {
     const jobId = crypto.randomUUID();
     // Without a known tab there is no way to tell whether the page is private: record nothing.
     const tab =
@@ -362,7 +362,7 @@ const handlers: Partial<Handlers> = {
         await requestOverRuntime(
           browser.runtime,
           'worker/start',
-          { jobId, url, filename },
+          { jobId, url, filename, ...(remux && { remux }) },
           { retries: 25, delay: 200 },
         );
       });
