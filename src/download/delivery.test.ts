@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Delivery, type DownloadDelta, type DownloadsApiLike } from './delivery';
+import {
+  Delivery,
+  type DeliveryOptions,
+  type DownloadDelta,
+  type DownloadsApiLike,
+} from './delivery';
 
 function makeArea() {
   const store: Record<string, unknown> = {};
@@ -11,7 +16,7 @@ function makeArea() {
   return { store, area };
 }
 
-function setup(options: { incognitoOption?: boolean; erasePrivateHistory?: boolean } = {}) {
+function setup(options: DeliveryOptions = {}) {
   const local = makeArea();
   const session = makeArea();
   const areas = { local: local.area, session: session.area };
@@ -335,6 +340,47 @@ describe('Delivery', () => {
       await restart().recover();
       expect(release).toHaveBeenCalledWith('j1', 'complete');
       expect(JSON.stringify(localStore)).not.toMatch(/a\.mp4|blob:x/);
+    });
+  });
+
+  describe('onComplete', () => {
+    it('fires for a completed regular download', async () => {
+      const onComplete = vi.fn(async () => {});
+      const { delivery, fire } = setup({ onComplete });
+      await delivery.deliver(request);
+      fire({ id: 7, state: { current: 'complete' } });
+      await flush();
+      expect(onComplete).toHaveBeenCalledWith('j1', 7);
+    });
+
+    it('does not fire for an interrupted download', async () => {
+      const onComplete = vi.fn(async () => {});
+      const { delivery, fire } = setup({ onComplete });
+      await delivery.deliver(request);
+      fire({ id: 7, state: { current: 'interrupted' } });
+      await flush();
+      expect(onComplete).not.toHaveBeenCalled();
+    });
+
+    it('does not fire for a private entry', async () => {
+      const onComplete = vi.fn(async () => {});
+      const { delivery, fire } = setup({ onComplete });
+      await delivery.deliver({ ...request, private: true });
+      fire({ id: 7, state: { current: 'complete' } });
+      await flush();
+      expect(onComplete).not.toHaveBeenCalled();
+    });
+
+    it('still releases when the hook throws', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const onComplete = vi.fn(async () => {
+        throw new Error('boom');
+      });
+      const { delivery, fire, release } = setup({ onComplete });
+      await delivery.deliver(request);
+      fire({ id: 7, state: { current: 'complete' } });
+      await flush();
+      expect(release).toHaveBeenCalledWith('j1', 'complete');
     });
   });
 });
