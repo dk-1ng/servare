@@ -38,6 +38,10 @@ pnpm build          # production packages for both browsers
 
 Technical documentation: [docs/design.md](docs/design.md). How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## How this project is built
+
+This project is directed by its maintainer and executed with AI coding agents ([Claude Code](https://claude.com/claude-code)), and it has been since the very first commit. The workflow is versioned with the code: [CLAUDE.md](CLAUDE.md) holds the rules and the per-issue loop, and [.claude/agents/](.claude/agents/) defines the specialized agents. Every change goes through an issue, a branch, an automated review and a pull request, and is merged only after the maintainer reviews and approves it. Commits carry an `Assisted-by: Claude Code` trailer.
+
 ## Legal notice
 
 Servare is a general-purpose tool for saving media that your browser already receives. **You are solely responsible for how you use it.** Only download content you have the right to download — your own content, content under a free license, in the public domain, or with the rights holder's permission — and respect the copyright laws of your country and each website's terms of service.

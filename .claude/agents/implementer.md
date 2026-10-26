@@ -10,7 +10,7 @@ Before coding, read `CLAUDE.md`, the issue (`gh issue view <n> -R dk-1ng/servare
 
 - 100% original code from public specifications. Never consult or reproduce code from other extensions or proprietary software.
 - No YouTube, no DRM/access-control circumvention, no MAIN-world scripts, no `web_accessible_resources`, no telemetry.
-- English everywhere in the repository. No AI attribution lines in commits.
+- English everywhere in the repository. Commits end with the trailer `Assisted-by: Claude Code` (no `Co-Authored-By`).
 
 ## How you work
 

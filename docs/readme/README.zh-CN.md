@@ -4,7 +4,7 @@
 
 [English](../../README.md) · [Português (BR)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Русский](README.ru.md) · **简体中文** · [日本語](README.ja.md)
 
-> 本文为译文。如有出入，以[英文版](../../README.md)为准。
+> 本文为译文。如有出入，以[英文版](../../README.md)为准。本译文由 AI 生成，欢迎提出修正。
 
 一款适用于 Firefox 和 Chromium 的浏览器扩展，可检测页面加载的视频和音频并将其保存到本地——支持直链文件、HLS 和 DASH，所有处理均在浏览器内完成。
 
@@ -39,6 +39,10 @@ pnpm build          # 为两种浏览器生成生产包
 ```
 
 技术文档（英文）：[docs/design.md](../design.md)。贡献指南：[CONTRIBUTING.md](../../CONTRIBUTING.md)。
+
+## 本项目的构建方式
+
+本项目由维护者主导，并借助 AI 编程代理（[Claude Code](https://claude.com/claude-code)）完成，自第一次提交起便是如此。工作流与代码一同纳入版本管理：[CLAUDE.md](../../CLAUDE.md) 包含规则和针对每个 issue 的工作循环，[.claude/agents/](../../.claude/agents/) 定义了各专用代理。每项更改都要经过 issue、分支、自动化审查和 pull request，并且只有在维护者审查并批准后才会合并。提交带有 `Assisted-by: Claude Code` trailer。
 
 ## 法律声明
 

@@ -4,7 +4,7 @@
 
 [English](../../README.md) · [Português (BR)](README.pt-BR.md) · [Español](README.es.md) · **Français** · [Deutsch](README.de.md) · [Русский](README.ru.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
-> Ceci est une traduction. En cas de divergence, la [version anglaise](../../README.md) fait foi.
+> Ceci est une traduction. En cas de divergence, la [version anglaise](../../README.md) fait foi. Elle est générée par IA ; les corrections sont les bienvenues.
 
 Extension pour Firefox et Chromium qui détecte les vidéos et les fichiers audio chargés par la page et permet de les enregistrer localement — fichiers directs, HLS et DASH — avec tout le traitement effectué dans le navigateur.
 
@@ -39,6 +39,10 @@ pnpm build          # paquets de production pour les deux navigateurs
 ```
 
 Documentation technique (en anglais) : [docs/design.md](../design.md). Contribuer : [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
+## Comment ce projet est construit
+
+Ce projet est dirigé par son mainteneur et réalisé avec des agents de programmation IA ([Claude Code](https://claude.com/claude-code)), et ce depuis le tout premier commit. Le flux de travail est versionné avec le code : [CLAUDE.md](../../CLAUDE.md) contient les règles et la boucle par issue, et [.claude/agents/](../../.claude/agents/) définit les agents spécialisés. Chaque modification passe par une issue, une branche, une revue automatisée et une pull request, et n'est fusionnée qu'après examen et approbation du mainteneur. Les commits portent un trailer `Assisted-by: Claude Code`.
 
 ## Mentions légales
 

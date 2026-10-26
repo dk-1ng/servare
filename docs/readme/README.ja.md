@@ -4,7 +4,7 @@
 
 [English](../../README.md) · [Português (BR)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Русский](README.ru.md) · [简体中文](README.zh-CN.md) · **日本語**
 
-> これは翻訳です。内容に相違がある場合は[英語版](../../README.md)が優先されます。
+> これは翻訳です。内容に相違がある場合は[英語版](../../README.md)が優先されます。この翻訳は AI によって生成されています。修正は歓迎します。
 
 ページが読み込む動画・音声を検出し、ローカルに保存できる Firefox / Chromium 用の拡張機能です。直接ファイル、HLS、DASH に対応し、すべての処理はブラウザ内で行われます。
 
@@ -39,6 +39,10 @@ pnpm build          # 両ブラウザ向けの本番パッケージ
 ```
 
 技術ドキュメント（英語）: [docs/design.md](../design.md)。コントリビュート方法: [CONTRIBUTING.md](../../CONTRIBUTING.md)。
+
+## このプロジェクトの作り方
+
+このプロジェクトはメンテナーが方針を定め、AI コーディングエージェント（[Claude Code](https://claude.com/claude-code)）によって実装されており、それは最初のコミットから変わりません。ワークフローはコードとともにバージョン管理されています。[CLAUDE.md](../../CLAUDE.md) にはルールと issue ごとのループがあり、[.claude/agents/](../../.claude/agents/) に専門エージェントが定義されています。すべての変更は issue、ブランチ、自動レビュー、プルリクエストを経て、メンテナーがレビューし承認した後にのみマージされます。コミットには `Assisted-by: Claude Code` トレーラーが付きます。
 
 ## 法的通知
 

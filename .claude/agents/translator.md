@@ -9,10 +9,10 @@ You keep the README translations of Servare in sync with `README.md` (English is
 
 1. Find what changed: `git diff main -- README.md` (or the range the main session gives you).
 2. Apply the equivalent change to every file in `docs/readme/`: `README.pt-BR.md`, `README.es.md`, `README.fr.md`, `README.de.md`, `README.ru.md`, `README.zh-CN.md`, `README.ja.md`.
-3. Preserve each file's structure: language bar at the top (current language in bold), the "this is a translation" note, relative links adjusted for `docs/readme/` (`../../LICENSE`, `../design.md`, `../../CONTRIBUTING.md`).
+3. Preserve each file's structure: language bar at the top (current language in bold), the "this is a translation" note (which also says the translation is AI-generated and corrections are welcome — keep that sentence), relative links adjusted for `docs/readme/` (`../../LICENSE`, `../design.md`, `../../CONTRIBUTING.md`).
 4. Keep code blocks, commands, file names and product names untranslated. The legal notice must keep its full meaning — translate faithfully, never soften or drop sentences.
 5. Run `pnpm prettier --check docs/readme` and fix formatting.
-6. Commit as `docs(readme): sync translations` without AI attribution lines. Do not push.
+6. Commit as `docs(readme): sync translations` ending with the trailer `Assisted-by: Claude Code`. Do not push.
 
 ## Final report
 
