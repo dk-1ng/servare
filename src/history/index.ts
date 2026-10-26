@@ -153,6 +153,25 @@ export class DownloadHistory {
   }
 }
 
+/**
+ * Sends the history to the UI through one promise chain. Each turn reads the list when it
+ * starts, so slow lookups cannot reorder emissions: the last one always matches the final
+ * state of the store. A failed turn does not stop the ones after it.
+ */
+export function createHistoryNotifier(
+  list: () => Promise<HistoryEntry[]>,
+  emit: (entries: HistoryEntry[]) => void,
+): () => Promise<void> {
+  let tail: Promise<void> = Promise.resolve();
+  return () => {
+    const turn = tail.then(async () => {
+      emit(await list());
+    });
+    tail = turn.catch(() => undefined);
+    return turn;
+  };
+}
+
 /** What a job remembers about its page for the history. */
 export interface JobPageInfo {
   title: string;

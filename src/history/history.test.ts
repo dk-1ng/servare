@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   addPageInfoToLegacyJobs,
+  createHistoryNotifier,
   DownloadHistory,
   downloadFingerprint,
   type DownloadLookup,
@@ -218,5 +219,42 @@ describe('addPageInfoToLegacyJobs', () => {
     expect(addPageInfoToLegacyJobs({ a: { mediaId: 'a', outputName: 'x' } })).toEqual({
       a: { mediaId: 'a', outputName: 'x', title: '', pageUrl: '', private: true },
     });
+  });
+});
+
+describe('createHistoryNotifier', () => {
+  it('does not let a slow list overwrite a later clear', async () => {
+    const history = new DownloadHistory(memoryArea(), noDownloads);
+    await history.record(entry('a'));
+    let slow = true;
+    const list = vi.fn(async () => {
+      const entries = await history.list();
+      if (slow) await new Promise((r) => setTimeout(r, 20));
+      return entries;
+    });
+    const emitted: HistoryEntry[][] = [];
+    const notify = createHistoryNotifier(list, (e) => emitted.push(e));
+
+    const first = notify();
+    await history.clear();
+    slow = false;
+    await Promise.all([first, notify()]);
+
+    expect(emitted.at(-1)).toEqual([]);
+    expect(emitted).toHaveLength(2);
+  });
+
+  it('keeps going after a failed turn', async () => {
+    const list = vi
+      .fn<() => Promise<HistoryEntry[]>>()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue([]);
+    const emitted: HistoryEntry[][] = [];
+    const notify = createHistoryNotifier(list, (e) => emitted.push(e));
+    const failed = notify();
+    const ok = notify();
+    await expect(failed).rejects.toThrow('boom');
+    await ok;
+    expect(emitted).toEqual([[]]);
   });
 });

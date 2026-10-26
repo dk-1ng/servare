@@ -12,6 +12,7 @@ import { registerObserver } from '@/src/detection/register';
 import { HeaderConflictError, HeaderReplay, type ReplayRecord } from '@/src/net/header-replay';
 import {
   addPageInfoToLegacyJobs,
+  createHistoryNotifier,
   DownloadHistory,
   downloadFingerprint,
   historyEntryFor,
@@ -106,6 +107,11 @@ const privateFailuresStore = createStore({
 });
 
 const history = new DownloadHistory(localArea, browser.downloads);
+/** Every `history/updated` goes through here, so a stale list never follows a newer one. */
+const notifyHistory = createHistoryNotifier(
+  () => history.list(),
+  (entries) => server?.emit('history/updated', { entries }),
+);
 
 /** Adds a finished job to the history and tells the UI; private jobs leave no trace (principle 4). */
 async function recordHistory(
@@ -117,7 +123,8 @@ async function recordHistory(
 ): Promise<void> {
   const entry = historyEntryFor(job, jobId, outcome, bytes, Date.now(), downloadId);
   if (!entry) return;
-  server?.emit('history/updated', { entries: await history.record(entry) });
+  await history.record(entry);
+  await notifyHistory();
 }
 
 /**
@@ -133,7 +140,7 @@ async function attachFromBrowser(jobId: string, downloadId: number): Promise<voi
     startTime: item.startTime,
   });
   if (await history.attachFingerprint(jobId, downloadId, fingerprint)) {
-    server?.emit('history/updated', { entries: await history.list() });
+    await notifyHistory();
   }
 }
 
@@ -395,12 +402,13 @@ const handlers: Partial<Handlers> = {
   },
   'history/list': ({ limit }) => history.list(limit),
   'history/remove': async ({ entryId }) => {
-    server?.emit('history/updated', { entries: await history.remove(entryId) });
+    await history.remove(entryId);
+    await notifyHistory();
     return null;
   },
   'history/clear': async () => {
     await history.clear();
-    server?.emit('history/updated', { entries: [] });
+    await notifyHistory();
     return null;
   },
   'download/cancel': async ({ jobId }) => {
