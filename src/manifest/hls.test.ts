@@ -120,7 +120,7 @@ describe('media playlist semantics', () => {
 
   it('resolves BYTERANGE offsets, continuing the previous range of the same resource', () => {
     const p = media(
-      '#EXTM3U\n#EXT-X-MAP:URI="i.mp4",BYTERANGE="10@0"\n#EXTINF:1,\n#EXT-X-BYTERANGE:100@50\nf.mp4\n#EXTINF:1,\n#EXT-X-BYTERANGE:200\nf.mp4\n#EXTINF:1,\n#EXT-X-BYTERANGE:5\ng.mp4\n#EXT-X-ENDLIST',
+      '#EXTM3U\n#EXT-X-MAP:URI="i.mp4",BYTERANGE="10@0"\n#EXTINF:1,\n#EXT-X-BYTERANGE:100@50\nf.mp4\n#EXTINF:1,\n#EXT-X-BYTERANGE:200\nf.mp4\n#EXTINF:1,\n#EXT-X-BYTERANGE:5@0\ng.mp4\n#EXT-X-ENDLIST',
     );
     expect(p.segments.map((s) => s.byteRange)).toEqual([
       { length: 100, offset: 50 },
@@ -176,8 +176,8 @@ describe('hostile and malformed input', () => {
     expect(() => media(`#EXTM3U\n#EXT-X-KEY:${'A'.repeat(100_000)}\n`)).toThrow(PlaylistError);
   });
 
-  it('stops parsing attributes at the first malformed entry', () => {
-    expect(parseAttributes('A=1,garbage,B=2')).toEqual({ A: '1' });
+  it('skips a malformed entry and keeps the rest', () => {
+    expect(parseAttributes('A=1,garbage,B=2')).toEqual({ A: '1', B: '2' });
   });
 
   it('rejects a malformed IV and an AES-128 key without URI', () => {
@@ -192,6 +192,32 @@ describe('hostile and malformed input', () => {
       '#EXTM3U\n#EXT-X-MAP:URI="f.mp4",BYTERANGE="720@0"\n#EXTINF:1,\n#EXT-X-BYTERANGE:1000\nf.mp4\n#EXT-X-ENDLIST',
     );
     expect(p.segments[0]!.byteRange).toEqual({ length: 1000, offset: 720 });
+  });
+});
+
+describe('attribute edge cases', () => {
+  it('fails closed when an unparsable entry precedes KEYFORMAT', () => {
+    const p = media(
+      '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="https://e.com/k",x-vendor=1,KEYFORMAT="com.vendor.drm"\n#EXTINF:1,\na.ts\n',
+    );
+    expect(p.protected).toBe(true);
+    expect(p.segments[0]!.key?.uri).toBeUndefined();
+  });
+
+  it('accepts spaces after commas', () => {
+    expect(parseAttributes('METHOD=AES-128, URI="k"')).toEqual({ METHOD: 'AES-128', URI: 'k' });
+  });
+
+  it('keeps a repeated byte-ranged MAP from rewinding the range', () => {
+    const map = '#EXT-X-MAP:URI="f.mp4",BYTERANGE="720@0"';
+    const p = media(
+      `#EXTM3U\n${map}\n#EXTINF:1,\n#EXT-X-BYTERANGE:1000\nf.mp4\n#EXT-X-DISCONTINUITY\n${map}\n#EXTINF:1,\n#EXT-X-BYTERANGE:1000\nf.mp4\n#EXT-X-ENDLIST`,
+    );
+    expect(p.segments.map((x) => x.byteRange?.offset)).toEqual([720, 1720]);
+  });
+
+  it('rejects a byte range whose offset cannot be derived', () => {
+    expect(() => media('#EXTM3U\n#EXTINF:1,\n#EXT-X-BYTERANGE:10\nf.mp4\n')).toThrow(PlaylistError);
   });
 });
 

@@ -13,13 +13,22 @@ export type Attributes = Record<string, string>;
 /** Parses an attribute list (RFC 8216 §4.2). Quoted values lose their quotes. */
 export function parseAttributes(list: string): Attributes {
   const out: Attributes = {};
-  // Sticky: every match must start where the previous one ended, so the scan is linear and a
-  // malformed list stops at the first mismatch instead of matching names inside other text.
-  const re = /([A-Z0-9-]+)=("[^"]*"|[^,]*)(?:,|$)/y;
-  for (let m = re.exec(list); m; m = re.exec(list)) {
-    const [, name = '', raw = ''] = m;
-    out[name] = raw.startsWith('"') ? raw.slice(1, -1) : raw;
-    if (re.lastIndex >= list.length) break;
+  // Sticky: each match must start where the previous one ended, so the scan is linear. An
+  // entry that does not parse is skipped up to the next comma rather than matched mid-text.
+  const re = /[ \t]*([A-Z0-9-]+)=("[^"]*"|[^,]*)(?:,|$)/y;
+  let at = 0;
+  while (at < list.length) {
+    re.lastIndex = at;
+    const m = re.exec(list);
+    if (m) {
+      const [, name = '', raw = ''] = m;
+      out[name] = raw.startsWith('"') ? raw.slice(1, -1) : raw;
+      at = re.lastIndex;
+    } else {
+      const comma = list.indexOf(',', at);
+      if (comma < 0) break;
+      at = comma + 1;
+    }
   }
   return out;
 }
@@ -119,10 +128,14 @@ function resolve(uri: string, base: string): string {
   return url.href;
 }
 
-function parseKey(attrs: Attributes, base: string): KeyInfo {
+function parseKey(list: string, base: string): KeyInfo {
+  const attrs = parseAttributes(list);
   const method = attrs['METHOD'] ?? '';
   const keyFormat = attrs['KEYFORMAT'] ?? 'identity';
-  const protectedKey = method !== 'NONE' && (method !== 'AES-128' || keyFormat !== 'identity');
+  // Fail closed: a KEYFORMAT that did not parse cleanly must not read as `identity`.
+  const lostKeyFormat = attrs['KEYFORMAT'] === undefined && /KEYFORMAT/i.test(list);
+  const protectedKey =
+    method !== 'NONE' && (method !== 'AES-128' || keyFormat !== 'identity' || lostKeyFormat);
   const key: KeyInfo = { method, keyFormat, protected: protectedKey };
   if (method !== 'NONE' && attrs['URI'] !== undefined && !protectedKey) {
     key.uri = resolve(attrs['URI'], base);
@@ -203,7 +216,7 @@ function parseMaster(lines: string[], base: string): MasterPlaylist {
         });
       }
     } else if (line.startsWith('#EXT-X-SESSION-KEY:')) {
-      sessionKeys.push(parseKey(parseAttributes(line.slice('#EXT-X-SESSION-KEY:'.length)), base));
+      sessionKeys.push(parseKey(line.slice('#EXT-X-SESSION-KEY:'.length), base));
     } else if (!line.startsWith('#') && pending) {
       const bandwidth = Number(pending['BANDWIDTH']);
       variants.push({
@@ -257,7 +270,9 @@ function parseMedia(lines: string[], base: string): MediaPlaylist {
       const uri = resolve(line, base);
       let byteRange: ByteRange | undefined;
       if (pendingRange) {
-        const offset = pendingRange.offset ?? rangeEnd.get(uri) ?? 0;
+        const offset = pendingRange.offset ?? rangeEnd.get(uri);
+        if (offset === undefined)
+          throw new PlaylistError('EXT-X-BYTERANGE without a previous range');
         byteRange = { length: pendingRange.length, offset };
         rangeEnd.set(uri, offset + pendingRange.length);
       }
@@ -280,7 +295,7 @@ function parseMedia(lines: string[], base: string): MediaPlaylist {
     } else if (line.startsWith('#EXT-X-BYTERANGE:')) {
       pendingRange = parseByteRange(line.slice('#EXT-X-BYTERANGE:'.length));
     } else if (line.startsWith('#EXT-X-KEY:')) {
-      key = parseKey(parseAttributes(line.slice('#EXT-X-KEY:'.length)), base);
+      key = parseKey(line.slice('#EXT-X-KEY:'.length), base);
       if (key.protected) isProtected = true;
     } else if (line.startsWith('#EXT-X-MAP:')) {
       const a = parseAttributes(line.slice('#EXT-X-MAP:'.length));
@@ -289,7 +304,8 @@ function parseMedia(lines: string[], base: string): MediaPlaylist {
       const uri = resolve(a['URI'], base);
       map = { uri, byteRange: r && { length: r.length, offset: r.offset ?? 0 } };
       // A segment range without an offset in the same file continues after the init section.
-      if (map.byteRange) rangeEnd.set(uri, map.byteRange.offset + map.byteRange.length);
+      if (map.byteRange && !rangeEnd.has(uri))
+        rangeEnd.set(uri, map.byteRange.offset + map.byteRange.length);
     } else if (line === '#EXT-X-DISCONTINUITY') {
       discontinuity = true;
     } else if (line.startsWith('#EXT-X-TARGETDURATION:')) {
