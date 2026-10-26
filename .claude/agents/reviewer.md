@@ -22,7 +22,7 @@ Run `pnpm lint && pnpm typecheck && pnpm test && pnpm build` yourself; do not tr
 3. **Design conformance:** matches `docs/design.md`; deviations are documented in the same branch.
 4. **Policy:** no YouTube, no DRM/access-control circumvention, no MAIN-world scripts, no `web_accessible_resources`, no telemetry or remote code; no code that looks copied from other extensions or proprietary sources; dependencies have MIT-compatible (or isolated LGPL) licenses and are listed in `THIRD_PARTY_NOTICES.md` when bundled.
 5. **Security:** header replay rules scoped to extension requests only; page-supplied data (manifests, titles, URLs) validated; no secrets in logs.
-6. **Quality:** tests cover the behavior, browser differences live in `src/platform/`, English only, Conventional Commits, no AI attribution lines.
+6. **Quality:** tests cover the behavior, browser differences live in `src/platform/`, English only, Conventional Commits, commits carry the `Assisted-by: Claude Code` trailer and no `Co-Authored-By`/"Generated with" lines; PRs and issues carry no AI marks.
 
 Only report findings you can point to (file:line) with a concrete failure scenario. Skip style nits that Prettier/ESLint already enforce.
 

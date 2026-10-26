@@ -11,7 +11,7 @@ Read `docs/design.md` before any change; it is the source of truth for behavior.
 - Media fixtures are always synthetic and generated locally.
 - Visual UI design happens elsewhere; this repo only defines the data contract (`docs/ui-contract.md`).
 - Everything in the repository (code, comments, docs, issues, commits, PRs) is in English. README translations live in `docs/readme/` and must be kept in sync.
-- No AI attribution lines (`Co-Authored-By`, "Generated with …") in commits or PRs.
+- Transparency: every commit ends with the trailer `Assisted-by: Claude Code` (a blank line before it). Never use `Co-Authored-By` or "Generated with …", and put no AI marks in PRs, issues or comments. Squash merges must keep the trailer in the final commit message. The README section "How this project is built" is the public disclosure; keep it accurate.
 
 ## Tracking
 
