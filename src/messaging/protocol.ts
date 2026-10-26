@@ -61,6 +61,7 @@ export const requestSchemas = {
       jobId: z.string(),
       url: z.url().max(8192),
       filename: z.string().min(1).max(255),
+      remux: z.literal('mp4').optional(),
     }),
     response: z.null(),
   },
@@ -105,6 +106,11 @@ export const requestSchemas = {
       filename: z.string().min(1).max(255),
       /** Tab whose player headers (Referer, Origin, Cookie) the download replays (§4.1.1). */
       tabId: z.number().int().optional(),
+      /**
+       * TEMPORARY (until #25): stream-copy the file into an MP4 with libav.js in the worker.
+       * The whole input is fetched first, so it is capped at 64 MiB.
+       */
+      remux: z.literal('mp4').optional(),
     }),
     response: z.object({ jobId: z.string() }),
   },

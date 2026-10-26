@@ -3,6 +3,7 @@
  * a 2 GB synthetic file is saved with the right name and size, and OPFS is left clean after
  * success and after a failed job. Run with `pnpm test:e2e` (see test/e2e/README.md).
  */
+import { execFileSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -21,7 +22,7 @@ const FIREFOX_UUID = '5f0c1c0e-2b0a-4f5e-9d3e-0a1b2c3d4e5f';
 type Target = 'chromium' | 'firefox';
 
 interface E2eApi {
-  start(url: string, filename: string, tabId?: number): Promise<{ jobId: string }>;
+  start(url: string, filename: string, tabId?: number, remux?: 'mp4'): Promise<{ jobId: string }>;
   cancel(jobId: string): Promise<null>;
   openPopup(tabId: number): Promise<void>;
   closeTabs(prefix: string): Promise<void>;
@@ -618,6 +619,63 @@ async function runTarget(target: Target, origin: string): Promise<void> {
       String(closeTab) in (await call('tabList')) ? undefined : true,
     );
     log.push('  ok   closing the tab removed its entry');
+
+    // 8. Remux (#17): the worker loads libav.js and stream-copies an MPEG-TS fixture into an MP4.
+    const remuxName = 'servare-e2e-remux.mp4';
+    const { jobId: remuxId } = await call(
+      'start',
+      `${origin}/media/hls/variants/hi_000.ts`,
+      remuxName,
+      undefined,
+      'mp4',
+    );
+    await until('remuxed MP4 saved', 60000, async () => {
+      const failed = (await call('failures')).find((f) => f.jobId === remuxId);
+      if (failed) throw new Error(`remux job failed: ${JSON.stringify(failed.error)}`);
+      return (await call('downloads')).find(
+        (d) => d.filename.endsWith(remuxName) && d.state === 'complete',
+      );
+    });
+    const probe = JSON.parse(
+      execFileSync(
+        'ffprobe',
+        [
+          '-v',
+          'error',
+          '-show_format',
+          '-show_streams',
+          '-of',
+          'json',
+          path.join(downloads, remuxName),
+        ],
+        { encoding: 'utf8' },
+      ),
+    ) as {
+      format: { format_name: string; duration: string };
+      streams: { codec_type: string; codec_name: string }[];
+    };
+    const codecs = probe.streams.map((st) => `${st.codec_type}:${st.codec_name}`).sort();
+    const duration = Number(probe.format.duration);
+    assert(probe.format.format_name.includes('mp4'), `not an MP4: ${probe.format.format_name}`);
+    assert(
+      JSON.stringify(codecs) === JSON.stringify(['audio:aac', 'video:h264']),
+      `unexpected streams: ${codecs.join(', ')}`,
+    );
+    assert(Math.abs(duration - 2) <= 0.1, `unexpected duration ${duration}`);
+    execFileSync('ffmpeg', [
+      '-v',
+      'error',
+      '-xerror',
+      '-i',
+      path.join(downloads, remuxName),
+      '-f',
+      'null',
+      '-',
+    ]);
+    await waitClosedAndClean('after the remux job');
+    log.push(
+      `  ok   MPEG-TS remuxed to MP4 in the worker (${codecs.join(' + ')}, ${duration.toFixed(2)} s), OPFS empty`,
+    );
   } finally {
     await browser.close().catch(() => undefined);
     if (process.env['E2E_KEEP']) console.info(`  kept ${work}`);
