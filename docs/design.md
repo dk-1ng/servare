@@ -358,6 +358,8 @@ Implemented in #15 (`src/history`). Finished (`done`) and `failed` jobs are reco
 
 Per RFC 8216 §5.2: key fetched from the `EXT-X-KEY` URI (with the player's headers), AES-CBC via WebCrypto, explicit IV or derived from the segment's media sequence number. Keys cached by URI for the duration of the job.
 
+- **Implemented in #20 (`src/crypto/aes128.ts`):** `decryptSegment(data, key, sequence, keys)` decrypts a whole segment with AES-CBC and PKCS#7 padding. The IV is the explicit `IV` or, when absent, the media sequence number as a 128-bit big-endian integer. `KeyCache` takes an injected `KeyFetcher` (the fetcher with header replay arrives in #21), caches the import by URI for the job, and drops a failed fetch so the next segment retries. A key that is not 16 bytes, a segment whose length is not a multiple of 16, a bad IV or a WebCrypto failure all throw `DecryptError` (`kind: 'decrypt'`). Padding is checked by WebCrypto, so a wrong key is usually reported but can occasionally decrypt to garbage.
+
 ### 4.4 Remux
 
 A single pipeline on top of the libav.js API:
