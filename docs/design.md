@@ -37,13 +37,13 @@ Servare is a browser extension (Firefox and Chromium, Manifest V3) that detects 
 
 ### 2.1 Stack
 
-| Item                | Choice                                                                                       | Rationale                                        |
-| ------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| Extension framework | [WXT](https://wxt.dev) + strict TypeScript                                                   | Per-browser manifests, unified `browser.*`, HMR  |
-| Media engine        | [libav.js](https://github.com/Yahweasel/libav.js) (FFmpeg compiled to WebAssembly, LGPL-2.1) | Demux/mux of TS, fMP4, Matroska; subtitles; MP3  |
-| Manifest parsers    | `m3u8-parser`, `mpd-parser`                                                                  | Maintained by the Video.js community, Apache-2.0 |
-| Data validation     | zod                                                                                          | Message and state contracts                      |
-| Testing             | Vitest, Playwright, local FFmpeg/ffprobe                                                     | Unit, E2E and output verification                |
+| Item                | Choice                                                                                       | Rationale                                           |
+| ------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Extension framework | [WXT](https://wxt.dev) + strict TypeScript                                                   | Per-browser manifests, unified `browser.*`, HMR     |
+| Media engine        | [libav.js](https://github.com/Yahweasel/libav.js) (FFmpeg compiled to WebAssembly, LGPL-2.1) | Demux/mux of TS, fMP4, Matroska; subtitles; MP3     |
+| Manifest parsers    | In-house HLS parser (`src/manifest/hls.ts`), `mpd-parser` for DASH                           | HLS: see §3.3. DASH: Video.js community, Apache-2.0 |
+| Data validation     | zod                                                                                          | Message and state contracts                         |
+| Testing             | Vitest, Playwright, local FFmpeg/ffprobe                                                     | Unit, E2E and output verification                   |
 
 ### 2.2 Components
 
@@ -219,6 +219,7 @@ Message details live in [`docs/ui-contract.md`](ui-contract.md). It adds, for la
 - The manifest is fetched again with the same headers to confirm the type from its content.
 - **HLS master:** variants (`RESOLUTION`, `BANDWIDTH`, `CODECS`), `EXT-X-MEDIA` audio and subtitles. Variants with unknown codecs are hidden.
 - **HLS media:** duration (sum of `EXTINF`), `EXT-X-KEY`, `EXT-X-MAP`, `EXT-X-BYTERANGE`. Live = no `EXT-X-ENDLIST`.
+- **Implemented in #18 (`src/manifest/hls.ts`):** the HLS parser is written in-house from RFC 8216 instead of using `m3u8-parser`: the protection rules of §3.4 need `EXT-X-SESSION-KEY`, `KEYFORMAT` and per-segment key/map state, and a small pure parser avoids a dependency to audit. Unknown tags are ignored; `file:`/`data:`/other non-http(s) URIs are rejected. A key with a method other than `NONE`/`AES-128`, or a `KEYFORMAT` other than `identity`, sets `protected` and its URI is not exposed. A missing `IV` stays absent (the caller derives it from `Segment.sequence`). `BYTERANGE` without an offset continues the previous range of the same resource. `containerForCodecs` maps `CODECS` to `mp4`, `webm` or `mkv` (§4.4) and returns `undefined` for unknown codecs (subtitle codecs are ignored). `isHiddenVariant` hides a variant only when its `CODECS` lists an unknown codec; `CODECS` is optional in RFC 8216, so a variant without it is kept. A malformed `IV`, an `AES-128` key without `URI`, or a line over 64 KiB makes the parser throw `PlaylistError` rather than guess (a wrong IV would corrupt output silently). Attribute entries that do not parse are skipped, but a key whose `KEYFORMAT` was lost that way counts as protected (fail closed). A `BYTERANGE` with no offset must follow a previous range of the same resource, or the parse fails (RFC 8216 §4.3.2.2).
 - **DASH:** `AdaptationSet`/`Representation`, `SegmentTemplate`/`SegmentList`/`SegmentBase`.
 - **Quality ordering:** height, then bitrate.
 
