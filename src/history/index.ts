@@ -77,17 +77,16 @@ export class DownloadHistory {
     });
   }
 
-  /** Adds an entry (replacing one with the same ID) and returns the new, resolved list. */
-  async record(entry: HistoryEntry): Promise<HistoryEntry[]> {
+  /** Adds an entry (replacing one with the same ID). */
+  async record(entry: HistoryEntry): Promise<void> {
     const { downloadId, ...rest } = entry;
     const stored: StoredHistoryEntry =
       downloadId === undefined || entry.status !== 'done'
         ? rest
         : { ...rest, download: { id: downloadId } };
-    const list = await this.store.update((all) =>
+    await this.store.update((all) =>
       [stored, ...all.filter((e) => e.id !== stored.id)].slice(0, HISTORY_LIMIT),
     );
-    return this.resolve(list);
   }
 
   async list(limit?: number): Promise<HistoryEntry[]> {
@@ -95,8 +94,8 @@ export class DownloadHistory {
     return this.resolve(limit === undefined ? all : all.slice(0, limit));
   }
 
-  async remove(entryId: string): Promise<HistoryEntry[]> {
-    return this.resolve(await this.store.update((list) => list.filter((e) => e.id !== entryId)));
+  async remove(entryId: string): Promise<void> {
+    await this.store.update((list) => list.filter((e) => e.id !== entryId));
   }
 
   /**
