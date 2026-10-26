@@ -4,7 +4,7 @@
 
 [English](../../README.md) · **Português (BR)** · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Русский](README.ru.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
-> Esta é uma tradução. Em caso de divergência, vale a [versão em inglês](../../README.md). Ela é gerada por IA; correções são bem-vindas.
+> Esta é uma tradução. Em caso de divergência, vale a [versão em inglês](../../README.md).
 
 Extensão para Firefox e Chromium que detecta vídeos e áudios carregados pela página e permite salvá-los localmente — arquivos diretos, HLS e DASH — com todo o processamento feito dentro do navegador.
 
