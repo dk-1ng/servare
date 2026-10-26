@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PlaylistError,
   containerForCodecs,
+  isHiddenVariant,
   parseAttributes,
   parsePlaylist,
   type MasterPlaylist,
@@ -164,6 +165,42 @@ describe('media playlist semantics', () => {
     expect(() => parsePlaylist('<html>', BASE)).toThrow(PlaylistError);
     expect(() => media('#EXTM3U\n#EXTINF:1,\nfile:///etc/passwd\n')).toThrow(PlaylistError);
     expect(() => media('#EXTM3U\n#EXTINF:1,\njavascript:alert(1)\n')).toThrow(PlaylistError);
+  });
+});
+
+describe('hostile and malformed input', () => {
+  it('parses a megabyte-long attribute value in linear time', () => {
+    const start = performance.now();
+    expect(parseAttributes('A'.repeat(1_000_000))).toEqual({});
+    expect(performance.now() - start).toBeLessThan(500);
+    expect(() => media(`#EXTM3U\n#EXT-X-KEY:${'A'.repeat(100_000)}\n`)).toThrow(PlaylistError);
+  });
+
+  it('stops parsing attributes at the first malformed entry', () => {
+    expect(parseAttributes('A=1,garbage,B=2')).toEqual({ A: '1' });
+  });
+
+  it('rejects a malformed IV and an AES-128 key without URI', () => {
+    const key = (a: string) => () => media(`#EXTM3U\n#EXT-X-KEY:${a}\n#EXTINF:1,\na.ts\n`);
+    expect(key('METHOD=AES-128,URI="k",IV=0x' + 'a'.repeat(34))).toThrow(PlaylistError);
+    expect(key('METHOD=AES-128,URI="k",IV=zz')).toThrow(PlaylistError);
+    expect(key('METHOD=AES-128')).toThrow(PlaylistError);
+  });
+
+  it('continues a segment range after a byte-ranged EXT-X-MAP in the same file', () => {
+    const p = media(
+      '#EXTM3U\n#EXT-X-MAP:URI="f.mp4",BYTERANGE="720@0"\n#EXTINF:1,\n#EXT-X-BYTERANGE:1000\nf.mp4\n#EXT-X-ENDLIST',
+    );
+    expect(p.segments[0]!.byteRange).toEqual({ length: 1000, offset: 720 });
+  });
+});
+
+describe('isHiddenVariant', () => {
+  it('hides only variants with an unsupported codec, not those without CODECS', () => {
+    expect(isHiddenVariant({ codecs: undefined })).toBe(false);
+    expect(isHiddenVariant({ codecs: 'avc1.4d4015,mp4a.40.2' })).toBe(false);
+    expect(isHiddenVariant({ codecs: 'avc1.4d4015,mp4a.40.2,wvtt' })).toBe(false);
+    expect(isHiddenVariant({ codecs: 'avc1.4d4015,mystery.1' })).toBe(true);
   });
 });
 

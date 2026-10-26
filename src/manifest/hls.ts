@@ -13,10 +13,13 @@ export type Attributes = Record<string, string>;
 /** Parses an attribute list (RFC 8216 §4.2). Quoted values lose their quotes. */
 export function parseAttributes(list: string): Attributes {
   const out: Attributes = {};
-  const re = /([A-Z0-9-]+)=("[^"]*"|[^,]*)/g;
+  // Sticky: every match must start where the previous one ended, so the scan is linear and a
+  // malformed list stops at the first mismatch instead of matching names inside other text.
+  const re = /([A-Z0-9-]+)=("[^"]*"|[^,]*)(?:,|$)/y;
   for (let m = re.exec(list); m; m = re.exec(list)) {
     const [, name = '', raw = ''] = m;
     out[name] = raw.startsWith('"') ? raw.slice(1, -1) : raw;
+    if (re.lastIndex >= list.length) break;
   }
   return out;
 }
@@ -119,13 +122,20 @@ function resolve(uri: string, base: string): string {
 function parseKey(attrs: Attributes, base: string): KeyInfo {
   const method = attrs['METHOD'] ?? '';
   const keyFormat = attrs['KEYFORMAT'] ?? 'identity';
-  const iv = attrs['IV']?.replace(/^0x/i, '').toLowerCase();
   const protectedKey = method !== 'NONE' && (method !== 'AES-128' || keyFormat !== 'identity');
   const key: KeyInfo = { method, keyFormat, protected: protectedKey };
   if (method !== 'NONE' && attrs['URI'] !== undefined && !protectedKey) {
     key.uri = resolve(attrs['URI'], base);
   }
-  if (iv && /^[0-9a-f]{1,32}$/.test(iv)) key.iv = iv.padStart(32, '0');
+  if (attrs['IV'] !== undefined) {
+    // A wrong IV would silently corrupt the first block of every segment: fail instead.
+    const iv = /^0x([0-9a-f]{1,32})$/i.exec(attrs['IV'])?.[1];
+    if (!iv) throw new PlaylistError('Invalid IV in EXT-X-KEY');
+    key.iv = iv.toLowerCase().padStart(32, '0');
+  }
+  if (method === 'AES-128' && !protectedKey && key.uri === undefined) {
+    throw new PlaylistError('EXT-X-KEY with METHOD=AES-128 has no URI');
+  }
   return key;
 }
 
@@ -140,11 +150,16 @@ function parseResolution(value: string | undefined): { width?: number; height?: 
   return m ? { width: Number(m[1]), height: Number(m[2]) } : {};
 }
 
+/** No legitimate playlist line comes close; longer ones are hostile or broken. */
+const MAX_LINE_LENGTH = 65_536;
+
 function splitLines(text: string): string[] {
   const lines = text
     .replace(/^\u{FEFF}/u, '')
     .split(/\r\n|\r|\n/)
     .map((l) => l.trim());
+  if (lines.some((l) => l.length > MAX_LINE_LENGTH))
+    throw new PlaylistError('Playlist line too long');
   if (lines[0] !== '#EXTM3U') throw new PlaylistError('Not an HLS playlist: missing #EXTM3U');
   return lines.filter((l) => l !== '');
 }
@@ -271,10 +286,10 @@ function parseMedia(lines: string[], base: string): MediaPlaylist {
       const a = parseAttributes(line.slice('#EXT-X-MAP:'.length));
       if (a['URI'] === undefined) continue;
       const r = a['BYTERANGE'] === undefined ? undefined : parseByteRange(a['BYTERANGE']);
-      map = {
-        uri: resolve(a['URI'], base),
-        byteRange: r && { length: r.length, offset: r.offset ?? 0 },
-      };
+      const uri = resolve(a['URI'], base);
+      map = { uri, byteRange: r && { length: r.length, offset: r.offset ?? 0 } };
+      // A segment range without an offset in the same file continues after the init section.
+      if (map.byteRange) rangeEnd.set(uri, map.byteRange.offset + map.byteRange.length);
     } else if (line === '#EXT-X-DISCONTINUITY') {
       discontinuity = true;
     } else if (line.startsWith('#EXT-X-TARGETDURATION:')) {
@@ -307,7 +322,8 @@ function parseMedia(lines: string[], base: string): MediaPlaylist {
 export type Container = 'mp4' | 'mkv' | 'webm';
 
 const MP4_VIDEO = /^(avc[1-4]|hvc1|hev1|dvh1|dvhe)(\.|$)/i;
-const MP4_AUDIO = /^(mp4a\.40\.\d+|mp4a\.6b|mp4a\.69|ac-3|ec-3)$/i;
+const MP4_AUDIO = /^(mp4a\.(40\.\d+|6b|69|a5|a6)|ac-3|ec-3)$/i;
+const TEXT = /^(wvtt|stpp)(\.|$)/i;
 const OPEN_VIDEO = /^(vp0?9|av01)(\.|$)/i;
 const OPEN_AUDIO = /^(opus|vorbis|flac)$/i;
 const WEBM_CODEC = /^(vp0?8|vp0?9|av01|opus|vorbis)(\.|$)/i;
@@ -315,13 +331,14 @@ const WEBM_CODEC = /^(vp0?8|vp0?9|av01|opus|vorbis)(\.|$)/i;
 /**
  * Chooses the output container from an RFC 6381 `CODECS` list (design §4.4): H.264/H.265 + AAC
  * → MP4; VP9/AV1/Opus/Vorbis → WebM when every track fits it, MKV otherwise. Returns undefined
- * when any codec is unknown, which hides the variant (design §3.3).
+ * when any codec is unknown (design §3.3). Subtitle codecs do not influence the choice. An absent
+ * `CODECS` also gives undefined, but that is not "unknown": see `isHiddenVariant`.
  */
 export function containerForCodecs(codecs: string | undefined): Container | undefined {
   const list = (codecs ?? '')
     .split(',')
     .map((c) => c.trim())
-    .filter(Boolean);
+    .filter((c) => c !== '' && !TEXT.test(c));
   if (list.length === 0) return undefined;
   if (list.every((c) => MP4_VIDEO.test(c) || MP4_AUDIO.test(c))) return 'mp4';
   if (
@@ -332,4 +349,16 @@ export function containerForCodecs(codecs: string | undefined): Container | unde
     return list.every((c) => WEBM_CODEC.test(c)) ? 'webm' : 'mkv';
   }
   return undefined;
+}
+
+/**
+ * Design §3.3: a variant is hidden when its `CODECS` lists a codec we cannot handle. `CODECS` is
+ * optional (RFC 8216 §4.3.4.2), so a variant without it is kept and probed at download time.
+ */
+export function isHiddenVariant(variant: Pick<Variant, 'codecs'>): boolean {
+  return (
+    variant.codecs !== undefined &&
+    variant.codecs.trim() !== '' &&
+    containerForCodecs(variant.codecs) === undefined
+  );
 }
