@@ -12,7 +12,13 @@ export type Attributes = Record<string, string>;
 
 /** Parses an attribute list (RFC 8216 §4.2). Quoted values lose their quotes. */
 export function parseAttributes(list: string): Attributes {
+  return scanAttributes(list).attrs;
+}
+
+/** `skipped`: an entry did not parse or repeated a name, so the list cannot be trusted whole. */
+function scanAttributes(list: string): { attrs: Attributes; skipped: boolean } {
   const out: Attributes = {};
+  let skipped = false;
   // Sticky: each match must start where the previous one ended, so the scan is linear. An
   // entry that does not parse is skipped up to the next comma rather than matched mid-text.
   const re = /[ \t]*([A-Z0-9-]+)=("[^"]*"|[^,]*)(?:,|$)/y;
@@ -22,15 +28,17 @@ export function parseAttributes(list: string): Attributes {
     const m = re.exec(list);
     if (m) {
       const [, name = '', raw = ''] = m;
+      if (name in out) skipped = true; // RFC 8216 §4.2 forbids repeated names
       out[name] = raw.startsWith('"') ? raw.slice(1, -1) : raw;
       at = re.lastIndex;
     } else {
       const comma = list.indexOf(',', at);
+      if (list.slice(at, comma < 0 ? undefined : comma).trim() !== '') skipped = true;
       if (comma < 0) break;
       at = comma + 1;
     }
   }
-  return out;
+  return { attrs: out, skipped };
 }
 
 export interface KeyInfo {
@@ -129,13 +137,12 @@ function resolve(uri: string, base: string): string {
 }
 
 function parseKey(list: string, base: string): KeyInfo {
-  const attrs = parseAttributes(list);
+  const { attrs, skipped } = scanAttributes(list);
   const method = attrs['METHOD'] ?? '';
   const keyFormat = attrs['KEYFORMAT'] ?? 'identity';
-  // Fail closed: a KEYFORMAT that did not parse cleanly must not read as `identity`.
-  const lostKeyFormat = attrs['KEYFORMAT'] === undefined && /KEYFORMAT/i.test(list);
+  // Fail closed: if any entry was lost, KEYFORMAT may have been among them.
   const protectedKey =
-    method !== 'NONE' && (method !== 'AES-128' || keyFormat !== 'identity' || lostKeyFormat);
+    method !== 'NONE' && (method !== 'AES-128' || keyFormat !== 'identity' || skipped);
   const key: KeyInfo = { method, keyFormat, protected: protectedKey };
   if (method !== 'NONE' && attrs['URI'] !== undefined && !protectedKey) {
     key.uri = resolve(attrs['URI'], base);

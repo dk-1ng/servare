@@ -204,6 +204,24 @@ describe('attribute edge cases', () => {
     expect(p.segments[0]!.key?.uri).toBeUndefined();
   });
 
+  it('does not mistake KEYFORMATVERSIONS or a URI path for KEYFORMAT', () => {
+    for (const attrs of [
+      'URI="https://e.com/k",KEYFORMATVERSIONS="1"',
+      'URI="https://e.com/keyformat/k"',
+    ]) {
+      const p = media(`#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,${attrs}\n#EXTINF:1,\na.ts\n`);
+      expect(p.protected).toBe(false);
+      expect(p.segments[0]!.key?.uri).toMatch(/^https:\/\/e\.com\//);
+    }
+  });
+
+  it('treats a repeated KEYFORMAT as protected', () => {
+    const p = media(
+      '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="k",KEYFORMAT="com.drm",KEYFORMAT="identity"\n#EXTINF:1,\na.ts\n',
+    );
+    expect(p.protected).toBe(true);
+  });
+
   it('accepts spaces after commas', () => {
     expect(parseAttributes('METHOD=AES-128, URI="k"')).toEqual({ METHOD: 'AES-128', URI: 'k' });
   });
