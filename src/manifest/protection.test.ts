@@ -44,6 +44,18 @@ describe('mpdIsProtected', () => {
     expect(mpdIsProtected(mpd('<!-- x --><ContentProtection schemeIdUri="x"/>'))).toBe(true);
   });
 
+  it('is not fooled by a processing instruction that contains a comment opener', () => {
+    expect(
+      mpdIsProtected('<MPD><?pi <!-- ?><ContentProtection schemeIdUri="x"/><!-- --></MPD>'),
+    ).toBe(true);
+  });
+
+  it('treats a DTD as protected', () => {
+    expect(
+      mpdIsProtected('<!DOCTYPE MPD [<!ENTITY cp "&#60;ContentProtection/>">]><MPD>&cp;</MPD>'),
+    ).toBe(true);
+  });
+
   it('does not match similarly named elements', () => {
     expect(mpdIsProtected(mpd('<ContentProtectionNote/>'))).toBe(false);
   });
@@ -80,6 +92,13 @@ describe('playlistIsProtected', () => {
 describe('assertDownloadable', () => {
   it('refuses a protected item', () => {
     expect(() => assertDownloadable({ protected: true })).toThrow(ProtectedContentError);
+  });
+
+  it('refuses an item built from a parsed protected playlist', () => {
+    const text =
+      '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="k"\n#EXTINF:6,\ns0.ts\n#EXT-X-ENDLIST\n';
+    const item = { protected: playlistIsProtected(parsePlaylist(text, BASE)) };
+    expect(() => assertDownloadable(item)).toThrow(ProtectedContentError);
   });
 
   it('lets a clear item through', () => {

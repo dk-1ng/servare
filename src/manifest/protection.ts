@@ -9,16 +9,19 @@ export class ProtectedContentError extends Error {
 }
 
 // Comments and CDATA could hide or fake an element, so they are removed before scanning.
-const COMMENT_OR_CDATA = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g;
+const COMMENT_OR_CDATA = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>/g;
+// A DTD can define entities that expand into elements, which a textual scan cannot follow.
+const DTD = /<!(?:DOCTYPE|ENTITY)/i;
 // Any namespace prefix: `<ContentProtection>`, `<cenc:ContentProtection>`, `<mpd:ContentProtection/>`.
 const CONTENT_PROTECTION = /<\s*(?:[\w.-]+:)?ContentProtection[\s/>]/;
 
 /**
  * True when a DASH MPD declares `ContentProtection` anywhere, whatever its `schemeIdUri`
- * (design §3.4). This is a textual scan, not a parse: the background has no `DOMParser` on
+ * (design §3.4), and treats any DTD as protected (real MPDs have none). This is a textual scan, not a parse: the background has no `DOMParser` on
  * Chromium, and a scan can only err towards "protected".
  */
 export function mpdIsProtected(mpd: string): boolean {
+  if (DTD.test(mpd)) return true;
   return CONTENT_PROTECTION.test(mpd.replace(COMMENT_OR_CDATA, ''));
 }
 
