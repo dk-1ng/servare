@@ -11,7 +11,15 @@ export interface DownloadsApiLike {
     /** Only sent where `DeliveryOptions.incognitoOption` is set: Chromium rejects it. */
     incognito?: boolean;
   }): Promise<number>;
-  search(query: { id?: number; url?: string }): Promise<{ id: number; state?: string }[]>;
+  search(query: { id?: number; url?: string }): Promise<
+    {
+      id: number;
+      state?: string;
+      filename?: string;
+      startTime?: string;
+      exists?: boolean;
+    }[]
+  >;
   /** Drops history entries only; the downloaded file stays on disk. */
   erase?(query: { id?: number }): Promise<number[]>;
   /** Fires with the id even if the context that called `download()` was suspended meanwhile. */
@@ -69,6 +77,11 @@ export interface DeliveryOptions {
    * private job lands in the regular history. Erase that entry once the download ends.
    */
   erasePrivateHistory?: boolean;
+  /**
+   * Called when a regular (non-private) download completes, before its blob is released. An
+   * error is logged and never blocks the release.
+   */
+  onComplete?: (jobId: string, downloadId: number) => Promise<void>;
 }
 
 /** How long an id-less entry may wait (e.g. an open save-as dialog) before it is given up on. */
@@ -286,8 +299,18 @@ export class Delivery {
     if (entry && wasPrivate && this.options.erasePrivateHistory) {
       await this.eraseFromHistory(downloadId);
     }
+    if (entry && outcome === 'complete' && !wasPrivate)
+      await this.notifyComplete(entry, downloadId);
     if (entry) await this.runRelease(entry.jobId, outcome);
     else this.releasing--;
+  }
+
+  private async notifyComplete(entry: Pending, downloadId: number): Promise<void> {
+    try {
+      await this.options.onComplete?.(entry.jobId, downloadId);
+    } catch (error) {
+      console.error('[servare] completion hook failed', error);
+    }
   }
 
   /** Best effort: a failure here must not keep the job's blob URL and OPFS file alive. */

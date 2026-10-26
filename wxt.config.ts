@@ -32,6 +32,7 @@ export default defineConfig({
     permissions: [
       'tabs',
       'downloads',
+      'downloads.open',
       'webRequest',
       'webNavigation',
       'scripting',

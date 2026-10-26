@@ -15,8 +15,47 @@ export const HistoryEntrySchema = z.object({
   completedAt: z.number(),
   bytes: z.number().nonnegative(),
   status: z.enum(['done', 'failed']),
+  /**
+   * Browser download of a `done` entry. Never stored: it is resolved and checked on every read
+   * (design §4.9.1), so a reused or erased id is not served.
+   */
+  downloadId: z.number().int().nonnegative().optional(),
 });
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
+
+/** What is persisted: the contract entry with a checked reference in place of `downloadId`. */
+export const StoredHistoryEntrySchema = HistoryEntrySchema.omit({ downloadId: true }).extend({
+  download: z
+    .object({
+      id: z.number().int().nonnegative(),
+      /** Lowercase hex SHA-256 of the item's file name and start time; see `downloadFingerprint`. */
+      fingerprint: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .optional(),
+    })
+    .optional(),
+});
+export type StoredHistoryEntry = z.infer<typeof StoredHistoryEntrySchema>;
+
+/** The subset of `browser.downloads` the history needs to check a stored reference. */
+export interface DownloadLookup {
+  search(query: {
+    id: number;
+  }): Promise<
+    { id: number; state?: string; exists?: boolean; filename?: string; startTime?: string }[]
+  >;
+}
+
+/** Identifies one downloaded file without keeping its path (design §4.9.1). */
+export async function downloadFingerprint(item: {
+  filename: string;
+  startTime: string;
+}): Promise<string> {
+  const data = new TextEncoder().encode(JSON.stringify([item.filename, item.startTime]));
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * Past downloads, newest first, in `storage.local` (design principle 4: private jobs are
@@ -25,34 +64,92 @@ export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 export class DownloadHistory {
   private readonly store;
 
-  constructor(area: StorageAreaLike) {
+  constructor(
+    area: StorageAreaLike,
+    private readonly downloads: DownloadLookup,
+  ) {
     this.store = createStore({
       area,
       key: 'history.entries',
-      schema: z.array(HistoryEntrySchema),
+      schema: z.array(StoredHistoryEntrySchema),
       version: 1,
-      defaults: (): HistoryEntry[] => [],
+      defaults: (): StoredHistoryEntry[] => [],
     });
   }
 
-  /** Adds an entry (replacing one with the same ID) and returns the new list. */
-  record(entry: HistoryEntry): Promise<HistoryEntry[]> {
-    return this.store.update((list) =>
-      [entry, ...list.filter((e) => e.id !== entry.id)].slice(0, HISTORY_LIMIT),
+  /** Adds an entry (replacing one with the same ID) and returns the new, resolved list. */
+  async record(entry: HistoryEntry): Promise<HistoryEntry[]> {
+    const { downloadId, ...rest } = entry;
+    const stored: StoredHistoryEntry =
+      downloadId === undefined || entry.status !== 'done'
+        ? rest
+        : { ...rest, download: { id: downloadId } };
+    const list = await this.store.update((all) =>
+      [stored, ...all.filter((e) => e.id !== stored.id)].slice(0, HISTORY_LIMIT),
     );
+    return this.resolve(list);
   }
 
   async list(limit?: number): Promise<HistoryEntry[]> {
     const all = await this.store.get();
-    return limit === undefined ? all : all.slice(0, limit);
+    return this.resolve(limit === undefined ? all : all.slice(0, limit));
   }
 
-  remove(entryId: string): Promise<HistoryEntry[]> {
-    return this.store.update((list) => list.filter((e) => e.id !== entryId));
+  async remove(entryId: string): Promise<HistoryEntry[]> {
+    return this.resolve(await this.store.update((list) => list.filter((e) => e.id !== entryId)));
+  }
+
+  /**
+   * Stores the fingerprint of the entry's download. A no-op when the entry is gone or refers to
+   * another download, and when the same fingerprint is already there. Returns whether it changed.
+   */
+  async attachFingerprint(
+    entryId: string,
+    downloadId: number,
+    fingerprint: string,
+  ): Promise<boolean> {
+    let changed = false;
+    await this.store.update((list) =>
+      list.map((e) => {
+        if (e.id !== entryId || e.download?.id !== downloadId) return e;
+        if (e.download.fingerprint === fingerprint) return e;
+        changed = true;
+        return { ...e, download: { id: downloadId, fingerprint } };
+      }),
+    );
+    return changed;
   }
 
   async clear(): Promise<void> {
     await this.store.clear();
+  }
+
+  private resolve(list: StoredHistoryEntry[]): Promise<HistoryEntry[]> {
+    return Promise.all(
+      list.map(async ({ download, ...entry }): Promise<HistoryEntry> => {
+        const id = await this.checkedId(download);
+        return id === undefined ? entry : { ...entry, downloadId: id };
+      }),
+    );
+  }
+
+  /** The stored id, only while it still names the very file that was delivered. */
+  private async checkedId(download: StoredHistoryEntry['download']): Promise<number | undefined> {
+    if (!download?.fingerprint) return undefined;
+    try {
+      const item = (await this.downloads.search({ id: download.id })).find(
+        (i) => i.id === download.id,
+      );
+      if (item?.state !== 'complete' || item.exists === false) return undefined;
+      if (item.filename === undefined || item.startTime === undefined) return undefined;
+      const now = await downloadFingerprint({
+        filename: item.filename,
+        startTime: item.startTime,
+      });
+      return now === download.fingerprint ? download.id : undefined;
+    } catch {
+      return undefined;
+    }
   }
 }
 
@@ -90,6 +187,7 @@ export function historyEntryFor(
   outcome: 'done' | 'failed' | 'cancelled',
   bytes: number,
   now: number,
+  downloadId?: number,
 ): HistoryEntry | undefined {
   if (job.private || outcome === 'cancelled') return undefined;
   return {
@@ -101,6 +199,7 @@ export function historyEntryFor(
     completedAt: now,
     bytes,
     status: outcome,
+    ...(outcome === 'done' && downloadId !== undefined ? { downloadId } : {}),
   };
 }
 
