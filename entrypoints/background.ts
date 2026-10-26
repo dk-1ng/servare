@@ -13,6 +13,7 @@ import { HeaderConflictError, HeaderReplay, type ReplayRecord } from '@/src/net/
 import {
   addPageInfoToLegacyJobs,
   DownloadHistory,
+  downloadFingerprint,
   historyEntryFor,
   jobPageInfo,
 } from '@/src/history';
@@ -104,7 +105,7 @@ const privateFailuresStore = createStore({
   defaults: (): { jobId: string; error: DownloadError }[] => [],
 });
 
-const history = new DownloadHistory(localArea);
+const history = new DownloadHistory(localArea, browser.downloads);
 
 /** Adds a finished job to the history and tells the UI; private jobs leave no trace (principle 4). */
 async function recordHistory(
@@ -112,10 +113,28 @@ async function recordHistory(
   job: RunningJob,
   outcome: 'done' | 'failed' | 'cancelled',
   bytes: number,
+  downloadId?: number,
 ): Promise<void> {
-  const entry = historyEntryFor(job, jobId, outcome, bytes, Date.now());
+  const entry = historyEntryFor(job, jobId, outcome, bytes, Date.now(), downloadId);
   if (!entry) return;
   server?.emit('history/updated', { entries: await history.record(entry) });
+}
+
+/**
+ * Pins a history entry to the file the browser reports for its download, once that is
+ * complete, so `downloadId` can be served later only while it still names that file (§4.9.1).
+ * A no-op without an entry (private, cancelled or failed jobs).
+ */
+async function attachFromBrowser(jobId: string, downloadId: number): Promise<void> {
+  const item = (await browser.downloads.search({ id: downloadId })).at(0);
+  if (item?.state !== 'complete') return;
+  const fingerprint = await downloadFingerprint({
+    filename: item.filename,
+    startTime: item.startTime,
+  });
+  if (await history.attachFingerprint(jobId, downloadId, fingerprint)) {
+    server?.emit('history/updated', { entries: await history.list() });
+  }
 }
 
 const headerStore = createStore({
@@ -215,6 +234,7 @@ const delivery = new Delivery(
   {
     incognitoOption: platform.downloadsIncognitoOption,
     erasePrivateHistory: platform.erasePrivateDownloads,
+    onComplete: attachFromBrowser,
   },
 );
 
@@ -421,10 +441,13 @@ const handlers: Partial<Handlers> = {
         status: 'done',
         progress: 1,
         bytesWritten: request.bytes ?? 0,
+        // Left out when the delivery erases the download a moment after it ends (§4.9.1).
+        ...(job.private && platform.erasePrivateDownloads ? {} : { downloadId }),
       });
-      await recordHistory(request.jobId, job, 'done', request.bytes ?? 0).catch(
+      await recordHistory(request.jobId, job, 'done', request.bytes ?? 0, downloadId).catch(
         logFailure('record the history'),
       );
+      await attachFromBrowser(request.jobId, downloadId).catch(logFailure('pin the download'));
     }
     settle(request.jobId);
     return { downloadId };

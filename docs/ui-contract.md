@@ -111,7 +111,7 @@ One detected piece of media in a tab.
 | `error`         | `DownloadError?`                  | Present only when `status` is `failed` or `cancelled`               |
 | `outputName`    | `string` (≤ 255)                  | Final file name (after template and sanitization, §7 of the design) |
 | `waiting`       | `{ reason, blockingJobId? }?`     | **Planned (#25).** Only on `queued`; see §3.2                       |
-| `downloadId`    | `number?`                         | **Planned (#79).** Browser download id, from `done` on; see §4.6    |
+| `downloadId`    | `number?`                         | Implemented (#79). Browser download id, from `done` on; see §4.6    |
 
 ```json
 {
@@ -272,7 +272,7 @@ Implemented in #15. History respects private windows: private jobs never appear 
 
 `HistoryEntry` = `{ id, title, pageUrl, outputName, kind, completedAt, bytes, status: 'done' | 'failed', downloadId? }`.
 
-`downloadId` (**planned, #79**) is present only on `done` entries whose browser download the background has just checked: it still exists, is complete and is the same file Servare delivered (design §4.9.1). It is checked again on every `history/list` and every `history/updated`, so the UI must use the latest value and never keep an old one. It is absent when the user cleared the browser's download list, after a Firefox restart (Firefox forgets earlier sessions' downloads), and while the browser is still writing the file. See §4.6 for how to use it.
+`downloadId` (implemented, #79) is present only on `done` entries whose browser download the background has just checked: it still exists, is complete and is the same file Servare delivered (design §4.9.1). It is checked again on every `history/list` and every `history/updated`, so the UI must use the latest value and never keep an old one. It is absent when the user cleared the browser's download list, after a Firefox restart (Firefox forgets earlier sessions' downloads), and while the browser is still writing the file. See §4.6 for how to use it.
 
 ### 4.4 Rules and settings
 
@@ -306,7 +306,7 @@ Planned (#34, the options page; M5). Until then M1–M4 behavior is driven by bu
 
 `delivery/*` and `worker/*` connect the background and the worker host. A UI must not send them.
 
-### 4.6 Opening or showing a delivered file (planned, #79)
+### 4.6 Opening or showing a delivered file (implemented, #79)
 
 **Exception to §1:** this is the only browser API the UI calls directly. There is no request for it, because `downloads.open` only works inside a user action and that action does not survive a message to the background (design §4.9.1).
 
