@@ -85,5 +85,7 @@ export const DownloadJobSchema = z.object({
   bytesWritten: z.number().nonnegative(),
   error: DownloadErrorSchema.optional(),
   outputName: z.string().max(255),
+  /** Browser download, from `done` on (design §4.9.1); absent when it will be erased. */
+  downloadId: z.number().int().nonnegative().optional(),
 });
 export type DownloadJob = z.infer<typeof DownloadJobSchema>;
