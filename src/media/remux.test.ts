@@ -13,7 +13,6 @@ const DIST = path.join(ROOT, 'vendor/libav/dist');
 const SEGMENTS = path.join(ROOT, 'test/fixtures/out/hls/variants');
 const hasTool = (name: string): boolean =>
   spawnSync(name, ['-version'], { stdio: 'ignore' }).status === 0;
-const hasFfmpeg = hasTool('ffmpeg');
 const hasFfprobe = hasTool('ffprobe');
 const segmentFiles = ['hi_000.ts', 'hi_001.ts', 'hi_002.ts'].map((f) => path.join(SEGMENTS, f));
 
@@ -51,10 +50,6 @@ function memoryFile(): {
 
 let work: string;
 beforeAll(() => {
-  // Fixtures are generated on demand; without FFmpeg the fixture-backed tests are skipped.
-  if (hasFfmpeg && segmentFiles.some((f) => !existsSync(f))) {
-    execFileSync('bash', [path.join(ROOT, 'test/fixtures/make.sh')], { stdio: 'inherit' });
-  }
   work = mkdtempSync(path.join(tmpdir(), 'servare-remux-'));
 }, 120_000);
 afterAll(() => {

@@ -1,5 +1,4 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -16,14 +15,6 @@ const hasFfprobe = hasTool('ffprobe');
 
 let server: TestServer;
 beforeAll(async () => {
-  // Fixtures are generated on demand; without FFmpeg the fixture-backed suites are skipped.
-  const missingFixture = CATALOG.some(
-    (e) =>
-      e.url.startsWith('/media/') && !existsSync(path.join(OUT, e.url.slice('/media/'.length))),
-  );
-  if (hasFfmpeg && missingFixture) {
-    execFileSync('bash', [path.join(ROOT, 'test/fixtures/make.sh')], { stdio: 'inherit' });
-  }
   server = await startTestServer();
 }, 120_000);
 afterAll(async () => {
