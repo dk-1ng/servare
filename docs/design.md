@@ -232,6 +232,8 @@ The item is flagged `protected: true` and shown as unavailable when there is:
 
 There is no attempt to obtain licenses, CDM keys or equivalents.
 
+**Implemented in #19 (`src/manifest/protection.ts`):** HLS protection is decided by the parser (#18). `mpdIsProtected` scans a DASH MPD textually for `ContentProtection` with any namespace prefix, after removing comments and CDATA; a scan (no `DOMParser` in the Chromium background) can only err towards "protected". `assertDownloadable` throws `ProtectedContentError` for an item with `protected: true`; the enqueue flow (#25) must call it before creating a job, mapping the error to `handler-failed` (`docs/ui-contract.md`). Any DTD counts as protected. The DASH parser (#26) reuses `mpdIsProtected` and must also run it on every remote element resolved through `xlink:href` (ISO/IEC 23009-1 §5.5), or refuse XLink.
+
 ### 3.5 Per-tab list
 
 - Cleared when the top frame commits a new document (`webNavigation.onCommitted`, `frameId === 0`) and on `tabs.onRemoved`. Not on `onBeforeNavigate`: a download link or a `204` starts a navigation that never replaces the page.
