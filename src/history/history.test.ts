@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   addPageInfoToLegacyJobs,
+  createHistoryNotifier,
   DownloadHistory,
   downloadFingerprint,
   type DownloadLookup,
@@ -66,7 +67,8 @@ describe('DownloadHistory', () => {
     const history = new DownloadHistory(memoryArea(), noDownloads);
     await history.record(entry('a'));
     await history.record(entry('b'));
-    expect((await history.remove('a')).map((e) => e.id)).toEqual(['b']);
+    await history.remove('a');
+    expect((await history.list()).map((e) => e.id)).toEqual(['b']);
     await history.clear();
     expect(await history.list()).toEqual([]);
   });
@@ -147,7 +149,8 @@ describe('DownloadHistory downloadId', () => {
 
   it('never exposes the stored download field', async () => {
     const { history } = await setup(() => [item()]);
-    for (const e of [...(await history.list()), ...(await history.record(entry('c')))]) {
+    await history.record(entry('c'));
+    for (const e of await history.list()) {
       expect(e).not.toHaveProperty('download');
     }
   });
@@ -218,5 +221,54 @@ describe('addPageInfoToLegacyJobs', () => {
     expect(addPageInfoToLegacyJobs({ a: { mediaId: 'a', outputName: 'x' } })).toEqual({
       a: { mediaId: 'a', outputName: 'x', title: '', pageUrl: '', private: true },
     });
+  });
+});
+
+describe('createHistoryNotifier', () => {
+  it('does not let a slow list overwrite a later clear', async () => {
+    let release = (): void => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    let searches = 0;
+    const lookup: DownloadLookup = {
+      search: async () => {
+        if (searches++ === 0) await gate;
+        return [{ id: 1, state: 'complete', filename: '/a.mp4', startTime: 't' }];
+      },
+    };
+    const history = new DownloadHistory(memoryArea(), lookup);
+    await history.record(entry('a', { downloadId: 1 }));
+    await history.attachFingerprint(
+      'a',
+      1,
+      await downloadFingerprint({ filename: '/a.mp4', startTime: 't' }),
+    );
+    const emitted: HistoryEntry[][] = [];
+    const notify = createHistoryNotifier(
+      () => history.list(),
+      (e) => emitted.push(e),
+    );
+
+    const first = notify();
+    await vi.waitFor(() => expect(searches).toBe(1));
+    await history.clear();
+    const second = notify();
+    release();
+    await Promise.all([first, second]);
+
+    expect(emitted.at(-1)).toEqual([]);
+  });
+
+  it('keeps going after a failed turn', async () => {
+    const list = vi
+      .fn<() => Promise<HistoryEntry[]>>()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue([]);
+    const emitted: HistoryEntry[][] = [];
+    const notify = createHistoryNotifier(list, (e) => emitted.push(e));
+    const failed = notify();
+    const ok = notify();
+    await expect(failed).rejects.toThrow('boom');
+    await ok;
+    expect(emitted).toEqual([[]]);
   });
 });

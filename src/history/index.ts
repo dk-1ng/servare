@@ -77,17 +77,16 @@ export class DownloadHistory {
     });
   }
 
-  /** Adds an entry (replacing one with the same ID) and returns the new, resolved list. */
-  async record(entry: HistoryEntry): Promise<HistoryEntry[]> {
+  /** Adds an entry (replacing one with the same ID). */
+  async record(entry: HistoryEntry): Promise<void> {
     const { downloadId, ...rest } = entry;
     const stored: StoredHistoryEntry =
       downloadId === undefined || entry.status !== 'done'
         ? rest
         : { ...rest, download: { id: downloadId } };
-    const list = await this.store.update((all) =>
+    await this.store.update((all) =>
       [stored, ...all.filter((e) => e.id !== stored.id)].slice(0, HISTORY_LIMIT),
     );
-    return this.resolve(list);
   }
 
   async list(limit?: number): Promise<HistoryEntry[]> {
@@ -95,8 +94,8 @@ export class DownloadHistory {
     return this.resolve(limit === undefined ? all : all.slice(0, limit));
   }
 
-  async remove(entryId: string): Promise<HistoryEntry[]> {
-    return this.resolve(await this.store.update((list) => list.filter((e) => e.id !== entryId)));
+  async remove(entryId: string): Promise<void> {
+    await this.store.update((list) => list.filter((e) => e.id !== entryId));
   }
 
   /**
@@ -151,6 +150,25 @@ export class DownloadHistory {
       return undefined;
     }
   }
+}
+
+/**
+ * Sends the history to the UI through one promise chain. Each turn reads the list when it
+ * starts, so slow lookups cannot reorder emissions: the last one always matches the final
+ * state of the store. A failed turn does not stop the ones after it.
+ */
+export function createHistoryNotifier(
+  list: () => Promise<HistoryEntry[]>,
+  emit: (entries: HistoryEntry[]) => void,
+): () => Promise<void> {
+  let tail: Promise<void> = Promise.resolve();
+  return () => {
+    const turn = tail.then(async () => {
+      emit(await list());
+    });
+    tail = turn.catch(() => undefined);
+    return turn;
+  };
 }
 
 /** What a job remembers about its page for the history. */
