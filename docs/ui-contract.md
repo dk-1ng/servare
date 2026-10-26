@@ -2,7 +2,7 @@
 
 > Status: draft for review · Source of truth for the types: [`src/messaging/schemas.ts`](../src/messaging/schemas.ts) and [`src/messaging/protocol.ts`](../src/messaging/protocol.ts) · Design: [design.md](design.md) §2.5
 
-The UI (popup, options page, any future surface) is designed separately. This document is everything it may rely on: which requests it can send, which events it receives, which states a job goes through and which errors it must be able to show. The UI never reads extension storage or page state directly.
+The UI (popup, options page, any future surface) is designed separately. This document is everything it may rely on: which requests it can send, which events it receives, which states a job goes through and which errors it must be able to show. The UI never reads extension storage or page state directly. The one exception is opening or showing a delivered file with the browser's `downloads` API (§4.6).
 
 Entries carry one of three markers:
 
@@ -111,6 +111,7 @@ One detected piece of media in a tab.
 | `error`         | `DownloadError?`                  | Present only when `status` is `failed` or `cancelled`               |
 | `outputName`    | `string` (≤ 255)                  | Final file name (after template and sanitization, §7 of the design) |
 | `waiting`       | `{ reason, blockingJobId? }?`     | **Planned (#25).** Only on `queued`; see §3.2                       |
+| `downloadId`    | `number?`                         | **Planned (#79).** Browser download id, from `done` on; see §4.6    |
 
 ```json
 {
@@ -269,7 +270,9 @@ Implemented in #15. History respects private windows: private jobs never appear 
 | `history/remove` | `{ entryId }`        | `null`           |
 | `history/clear`  | `{}`                 | `null`           |
 
-`HistoryEntry` = `{ id, title, pageUrl, outputName, kind, completedAt, bytes, status: 'done' | 'failed' }`.
+`HistoryEntry` = `{ id, title, pageUrl, outputName, kind, completedAt, bytes, status: 'done' | 'failed', downloadId? }`.
+
+`downloadId` (**planned, #79**) is present only on `done` entries whose browser download the background has just checked: it still exists, is complete and is the same file Servare delivered (design §4.9.1). It is checked again on every `history/list` and every `history/updated`, so the UI must use the latest value and never keep an old one. It is absent when the user cleared the browser's download list, after a Firefox restart (Firefox forgets earlier sessions' downloads), and while the browser is still writing the file. See §4.6 for how to use it.
 
 ### 4.4 Rules and settings
 
@@ -303,6 +306,20 @@ Planned (#34, the options page; M5). Until then M1–M4 behavior is driven by bu
 
 `delivery/*` and `worker/*` connect the background and the worker host. A UI must not send them.
 
+### 4.6 Opening or showing a delivered file (planned, #79)
+
+**Exception to §1:** this is the only browser API the UI calls directly. There is no request for it, because `downloads.open` only works inside a user action and that action does not survive a message to the background (design §4.9.1).
+
+- **Where the id comes from.** `DownloadJob.downloadId` (in the `done` event of a job) or `HistoryEntry.downloadId` (from `history/list` / `history/updated`). Use only an id the background just gave you; never store one or build one. No id means no button: show the fallback text below.
+- **Open the file:** call `browser.downloads.open(downloadId)` **synchronously in the click handler, before any `await`**. Firefox drops the user action at the first `await` (even a short one) and then rejects the call; Chromium allows a few seconds but must not be relied on. Do not check anything first (no `downloads.search`, no request to the background) inside that handler.
+- **Show it in its folder:** call `browser.downloads.show(downloadId)` the same way, from a click.
+- **Failures.** Both calls return a promise; always handle rejection and show a notice such as "This file is not available any more". `open` rejects while the browser is still writing the file (a moment after `done`), when the file was removed, and when the item was erased. `show` on Chromium never reports failure (it resolves even for an unknown id), so the UI cannot learn there that the file is gone. Do not retry on your own.
+- **Nothing else.** The UI calls no other `downloads` function (`search`, `erase`, `removeFile`, …) and nothing else from `browser.*` outside this section.
+- **Private jobs** never reach the history, so their `downloadId` is only on the job, for the current session. On Chromium it is never set for private (or tabless) jobs, because their download is erased from the browser's list as soon as it ends (design §4.9).
+- **Fallback text** (no `downloadId`): "Saved in your downloads folder as `outputName`", or "Saved where you chose as `outputName`" when `Settings.saveAs` is on. Mention a subfolder only once `settings/get` is available (#34).
+
+The required permission `downloads.open` is part of the manifest on both browsers, so the UI never asks for permissions.
+
 ## 5. Events
 
 Pushed to every connected port. Names and payloads are final.
@@ -334,6 +351,7 @@ Every user action planned through M4 and how the UI performs it:
 | Name the output                                | M1        | `outputName` (the template itself is configured in M5 via `Settings.nameTemplate`)              |
 | Per-domain behavior (disable, min size, speed) | M1        | Bundled defaults (#14); editing is M5 via `rules/*`                                             |
 | See past downloads                             | M1        | `history/*` + `history/updated`                                                                 |
+| Open a finished file or show it in its folder  | M1        | `downloadId` + direct `downloads.open` / `downloads.show` in the click handler (§4.6, #79)      |
 | Cancel a download                              | M1        | `download/cancel`                                                                               |
 | Choose a quality (HLS)                         | M2        | `variantId` from `MediaItem.variants`                                                           |
 | Choose alternate audio tracks                  | M2        | `audioTrackIds` from `MediaItem.audioTracks`                                                    |
