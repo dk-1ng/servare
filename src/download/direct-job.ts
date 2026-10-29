@@ -1,5 +1,6 @@
 import type { DownloadError } from '../messaging/schemas';
 import { QuotaError } from '../media/storage';
+import { abortableSleep, backoffDelay, DEFAULT_RETRY, type RetryPolicy } from '../net/fetcher';
 
 /** The subset of `OpfsWriter` the runner needs. */
 export interface JobWriter {
@@ -20,44 +21,23 @@ export interface DirectJobDeps {
   onProgress?(bytesWritten: number, total: number | undefined): void;
   /** Resolves after `ms`, or rejects when `signal` aborts. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
-  /** Backoff settings: total tries, first delay and the cap for any single wait. */
-  retry?: { attempts: number; baseMs: number; maxMs: number };
+  /**
+   * Backoff for a body that fails midway. Failures of the request itself (network errors,
+   * 408/429/5xx) are retried by the fetcher behind `fetch`, not here.
+   */
+  retry?: Pick<RetryPolicy, 'attempts' | 'baseMs' | 'maxMs'>;
   /** Random source in [0, 1) for jitter. */
   random?: () => number;
 }
 
 const YIELD_INTERVAL_MS = 50;
-const DEFAULT_RETRY = { attempts: 4, baseMs: 500, maxMs: 30_000 };
-
-function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new JobError({ kind: 'cancelled' }));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new JobError({ kind: 'cancelled' }));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-/** `Retry-After` as seconds or an HTTP date, in ms; undefined when absent or unusable. */
-export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
-  if (value === null) return undefined;
-  const seconds = Number(value);
-  if (value.trim() !== '' && Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const date = Date.parse(value);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
-}
-
-function isTransientStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
+/** A sleep whose cancellation is reported the way the job reports it. */
+async function cancellableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  try {
+    await abortableSleep(ms, signal);
+  } catch {
+    throw new JobError({ kind: 'cancelled' });
+  }
 }
 
 /** The resumed range did not match: try again from byte 0 at once, without waiting. */
@@ -65,10 +45,7 @@ class Restart extends Error {}
 
 /** Thrown inside an attempt for failures worth another try. */
 class Transient extends Error {
-  constructor(
-    readonly reason: unknown,
-    readonly waitMs?: number,
-  ) {
+  constructor(readonly reason: unknown) {
     super('transient');
   }
 }
@@ -91,8 +68,8 @@ export function toDownloadError(error: unknown): DownloadError {
 
 /**
  * Runner for a single direct file (§4.1, §4.9): the response is streamed straight into OPFS,
- * never held in memory. Transient failures (network errors, 408/429/5xx, a body cut short) are
- * retried with exponential backoff and jitter, resuming with `Range` when the server allows it.
+ * never held in memory. A body cut short is retried with exponential backoff and jitter, resuming with `Range`
+ * when the server allows it; request-phase failures are the fetcher's job (`src/net/fetcher.ts`).
  * Cancelling through `signal` or any final failure removes the temporary file.
  */
 export async function runDirectJob(
@@ -101,7 +78,7 @@ export async function runDirectJob(
   signal: AbortSignal = new AbortController().signal,
 ): Promise<File> {
   const retry = deps.retry ?? DEFAULT_RETRY;
-  const sleep = deps.sleep ?? abortableSleep;
+  const sleep = deps.sleep ?? cancellableSleep;
   const random = deps.random ?? ((): number => Math.random());
   let writer: JobWriter | undefined;
   let position = 0;
@@ -126,17 +103,9 @@ export async function runDirectJob(
       response = await deps.fetch(job.url, { signal, headers });
     } catch (error) {
       if (signal.aborted) throw new JobError({ kind: 'cancelled' });
-      throw new Transient(error);
+      throw error;
     }
-    if (!response.ok) {
-      if (isTransientStatus(response.status)) {
-        throw new Transient(
-          new JobError({ kind: 'http', status: response.status }),
-          parseRetryAfter(response.headers.get('retry-after')),
-        );
-      }
-      throw new JobError({ kind: 'http', status: response.status });
-    }
+    if (!response.ok) throw new JobError({ kind: 'http', status: response.status });
     if (!response.body) throw new Transient(new JobError({ kind: 'incomplete', ratio: 0 }));
 
     if (resuming) {
@@ -220,9 +189,7 @@ export async function runDirectJob(
         }
         if (!(error instanceof Transient)) throw error;
         if (tries >= retry.attempts) throw error.reason;
-        const backoff = Math.min(retry.maxMs, retry.baseMs * 2 ** (tries - 1));
-        const wait = Math.min(retry.maxMs, error.waitMs ?? backoff * (0.5 + random() / 2));
-        await sleep(wait, signal);
+        await sleep(backoffDelay(tries, retry, random), signal);
       }
     }
   } catch (error) {

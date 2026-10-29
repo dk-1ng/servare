@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { QuotaError } from '../media/storage';
-import {
-  JobError,
-  parseRetryAfter,
-  runDirectJob,
-  toDownloadError,
-  type JobWriter,
-} from './direct-job';
+import { JobError, runDirectJob, toDownloadError, type JobWriter } from './direct-job';
 
 function body(...chunks: number[][]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -120,41 +114,35 @@ describe('runDirectJob retries', () => {
     return { ...s, deps, calls, waits };
   }
 
-  it('retries a 503 with exponential backoff and then succeeds', async () => {
+  it('retries a cut body with exponential backoff and then succeeds', async () => {
     const h = harness([
-      new Response('', { status: 503 }),
-      new Response('', { status: 503 }),
-      new Response(body([1]), { headers: { 'content-length': '1' } }),
+      new Response(body([1]), { headers: { 'content-length': '3', etag: '"v1"' } }),
+      new Response(body([2]), {
+        status: 206,
+        headers: { 'content-range': 'bytes 1-1/3', etag: '"v1"' },
+      }),
+      new Response(body([3]), { status: 206, headers: { 'content-range': 'bytes 2-2/3' } }),
     ]);
     expect(await runDirectJob(job, h.deps)).toBe(h.file);
     expect(h.waits).toEqual([100, 200]);
   });
 
-  it('honors Retry-After on 429, capped by the maximum wait', async () => {
-    const h = harness([
-      new Response('', { status: 429, headers: { 'retry-after': '5' } }),
-      new Response(body([1])),
-    ]);
-    await runDirectJob(job, h.deps);
-    expect(h.waits).toEqual([1000]);
-  });
-
-  it('does not retry a 403', async () => {
-    const h = harness([new Response('', { status: 403 })]);
+  it('does not retry an error status itself: that is the fetcher job', async () => {
+    const h = harness([new Response('', { status: 503 })]);
     await expect(runDirectJob(job, h.deps)).rejects.toMatchObject({
-      detail: { kind: 'http', status: 403 },
+      detail: { kind: 'http', status: 503 },
     });
     expect(h.deps.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('gives up after the last attempt with the last failure', async () => {
     const h = harness([
-      new Response('', { status: 500 }),
-      new Response('', { status: 500 }),
-      new Response('', { status: 502 }),
+      new Response(body([1]), { headers: { 'content-length': '4' } }),
+      new Response(body([2]), { headers: { 'content-length': '4' } }),
+      new Response(body([3]), { headers: { 'content-length': '4' } }),
     ]);
     await expect(runDirectJob(job, h.deps)).rejects.toMatchObject({
-      detail: { kind: 'http', status: 502 },
+      detail: { kind: 'incomplete', ratio: 0.25 },
     });
     expect(h.deps.fetch).toHaveBeenCalledTimes(3);
   });
@@ -261,15 +249,6 @@ describe('runDirectJob retries', () => {
       [2, 3],
       [3, 3],
     ]);
-  });
-});
-
-describe('parseRetryAfter', () => {
-  it('reads seconds and dates', () => {
-    expect(parseRetryAfter('3')).toBe(3000);
-    expect(parseRetryAfter('Thu, 01 Jan 1970 00:00:10 GMT', 4000)).toBe(6000);
-    expect(parseRetryAfter(null)).toBeUndefined();
-    expect(parseRetryAfter('soon')).toBeUndefined();
   });
 });
 
