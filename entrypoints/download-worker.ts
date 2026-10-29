@@ -69,6 +69,8 @@ export default defineUnlistedScript(() => {
       })
       .finally(() => {
         controllers.delete(jobId);
+        // Safety net: frees any host slot a half-read body of this job might still hold.
+        controller.abort();
       });
   };
 });

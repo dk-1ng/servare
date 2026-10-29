@@ -45,6 +45,55 @@ describe('fetcher against the test server', () => {
     expect(server.requests).toHaveLength(3);
   });
 
+  it('does not hold the host after a download fails early', async () => {
+    const fetcher = fetcherFor('economy');
+    const run = (url: string, ensureFreeSpace: () => Promise<void> = async () => undefined) =>
+      runDirectJob(
+        { jobId: 'j', url: `${server.origin}${url}` },
+        {
+          fetch: fetcher.fetch,
+          openWriter: async () => ({
+            writeAt: () => undefined,
+            truncate: () => undefined,
+            finish: async () => new File([], 'f'),
+            remove: async () => undefined,
+          }),
+          ensureFreeSpace,
+        },
+      );
+    const hang = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('the host stayed blocked')), 2000),
+    );
+    // Economy allows one connection: a leaked slot would make every later request wait forever.
+    await expect(run('/status/404')).rejects.toMatchObject({
+      detail: { kind: 'http', status: 404 },
+    });
+    await expect(
+      run('/synthetic/100', async () => {
+        throw new Error('no space');
+      }),
+    ).rejects.toThrow('no space');
+    // A write that fails midway leaves the body half read.
+    await expect(
+      runDirectJob(
+        { jobId: 'j', url: `${server.origin}/synthetic/100` },
+        {
+          fetch: fetcher.fetch,
+          openWriter: async () => ({
+            writeAt: () => {
+              throw new DOMException('full', 'QuotaExceededError');
+            },
+            truncate: () => undefined,
+            finish: async () => new File([], 'f'),
+            remove: async () => undefined,
+          }),
+          ensureFreeSpace: async () => undefined,
+        },
+      ),
+    ).rejects.toMatchObject({ name: 'QuotaExceededError' });
+    await expect(Promise.race([run('/synthetic/100'), hang])).resolves.toBeInstanceOf(File);
+  });
+
   /** Milliseconds to fetch three files from one host when the server holds each answer 300 ms. */
   async function timeThreeSlowFetches(profile: SpeedProfile): Promise<number> {
     const fetcher = fetcherFor(profile);

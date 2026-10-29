@@ -74,7 +74,7 @@ export function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 interface HostState {
   active: number;
   waiters: { limit: number; grant: () => void }[];
-  /** Wall-clock ms before which no new request goes out (a `429`/`503` with `Retry-After`). */
+  /** Wall-clock ms before which no new request goes out (set by a `429` or a `Retry-After`). */
   cooldownUntil: number;
 }
 
@@ -132,7 +132,7 @@ export function createFetcher(deps: FetcherDeps): Fetcher {
         state.waiters.shift();
         state.active++;
         next.grant();
-      } else if (state.active === 0 && state.waiters.length === 0) {
+      } else if (state.active === 0 && state.waiters.length === 0 && state.cooldownUntil <= now()) {
         hosts.delete(key);
       }
     };
@@ -216,14 +216,21 @@ export function createFetcher(deps: FetcherDeps): Fetcher {
 
       for (let tries = 1; ; tries++) {
         // A host that asked us to slow down is left alone by every request, not just this one.
-        for (
-          let wait = stateOf(key).cooldownUntil - now();
-          wait > 0;
-          wait = stateOf(key).cooldownUntil - now()
-        ) {
-          await sleep(wait, signal);
+        // A request that waited in the queue checks again once it has its slot: a 429 may have
+        // set the cooldown while it was queued.
+        let release: () => void;
+        for (;;) {
+          for (
+            let wait = stateOf(key).cooldownUntil - now();
+            wait > 0;
+            wait = stateOf(key).cooldownUntil - now()
+          ) {
+            await sleep(wait, signal);
+          }
+          release = await acquire(key, limit, signal);
+          if (stateOf(key).cooldownUntil <= now()) break;
+          release();
         }
-        const release = await acquire(key, limit, signal);
 
         let response: Response;
         try {

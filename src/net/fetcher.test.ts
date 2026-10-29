@@ -150,6 +150,68 @@ describe('retries', () => {
     ]);
   });
 
+  it('makes a request that was queued during a 429 wait out the cooldown too', async () => {
+    let endFirstSleep: () => void = () => undefined;
+    const firstSleep = new Promise<void>((resolve) => {
+      endFirstSleep = resolve;
+    });
+    let sleeps = 0;
+    const h = harness([], {
+      profile: 'economy',
+      sleep: async () => (sleeps++ === 0 ? firstSleep : undefined),
+    });
+    const sentAt: Record<string, number[]> = {};
+    h.raw.mockImplementation(async (url) => {
+      (sentAt[url] ??= []).push(h.clock.now);
+      return url.endsWith('/a') && sentAt[url].length === 1
+        ? new Response('', { status: 429, headers: { 'retry-after': '1' } })
+        : new Response('ok');
+    });
+    // Economy: /b is queued behind /a and gets the slot the moment /a gives up on its 429,
+    // while /a is still backing off (its sleep is held open, so the clock stands still).
+    const a = h.fetcher.fetch('http://a.test/a', { signal: h.signal });
+    const b = h.fetcher.fetch('http://a.test/b', { signal: h.signal });
+    await drain(await b);
+    expect(sentAt['http://a.test/b']).toEqual([1000]);
+    endFirstSleep();
+    await drain(await a);
+  });
+
+  it('keeps a cooldown although the host went idle in the meantime', async () => {
+    let closeB: () => void = () => undefined;
+    let unblockSleep: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => {
+      unblockSleep = resolve;
+    });
+    let sleeps = 0;
+    const h = harness([], { sleep: async () => (sleeps++ === 0 ? blocked : undefined) });
+    const bodyB = new ReadableStream<Uint8Array>({
+      start(controller) {
+        closeB = () => controller.close();
+      },
+    });
+    const sentAt: Record<string, number> = {};
+    h.raw.mockImplementation(async (url) => {
+      sentAt[url] ??= h.clock.now;
+      if (url.endsWith('/a') && h.raw.mock.calls.filter(([u]) => u === url).length === 1) {
+        return new Response('', { status: 429, headers: { 'retry-after': '2' } });
+      }
+      return url.endsWith('/b') ? new Response(bodyB) : new Response('ok');
+    });
+    const b = await h.fetcher.fetch('http://a.test/b', { signal: h.signal });
+    const a = h.fetcher.fetch('http://a.test/a', { signal: h.signal });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    // /a is backing off (its sleep is blocked); /b was the host's other request and now ends,
+    // which leaves the host idle while the cooldown still runs.
+    closeB();
+    await drain(b);
+    const c = h.fetcher.fetch('http://a.test/c', { signal: h.signal });
+    await drain(await c);
+    expect(sentAt['http://a.test/c']).toBeGreaterThanOrEqual(2000);
+    unblockSleep();
+    await drain(await a);
+  });
+
   it('stops retrying once aborted', async () => {
     const h = harness([new TypeError('network'), new Response('ok')]);
     const controller = new AbortController();

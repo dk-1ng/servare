@@ -105,77 +105,90 @@ export async function runDirectJob(
       if (signal.aborted) throw new JobError({ kind: 'cancelled' });
       throw error;
     }
-    if (!response.ok) throw new JobError({ kind: 'http', status: response.status });
-    if (!response.body) throw new Transient(new JobError({ kind: 'incomplete', ratio: 0 }));
-
-    if (resuming) {
-      const range = /^bytes (\d+)-\d+\/(\d+|\*)$/.exec(response.headers.get('content-range') ?? '');
-      const sizeKnown = range?.[2] !== undefined && range[2] !== '*';
-      if (
-        response.status !== 206 ||
-        Number(range?.[1]) !== position ||
-        (sizeKnown && total !== undefined && Number(range[2]) !== total)
-      ) {
-        position = 0;
-        writer?.truncate(0);
-        if (response.status === 206) {
-          // A partial body that does not continue our bytes is useless, and its length says
-          // nothing about the whole file: drop it and ask again from the start, without Range.
-          await response.body.cancel().catch(() => undefined);
-          validator = undefined;
-          total = undefined;
-          throw new Restart();
-        }
-        // A plain 200 carries the whole file again: read this body from the start.
-      }
-    }
-    if (position === 0) {
-      const etag = response.headers.get('etag');
-      validator =
-        (etag !== null && !etag.startsWith('W/') ? etag : undefined) ??
-        response.headers.get('last-modified') ??
-        undefined;
-      // A transfer encoding changes the byte count, so only trust the header without one.
-      const declared = Number(response.headers.get('content-length'));
-      total =
-        Number.isFinite(declared) && declared > 0 && !response.headers.has('content-encoding')
-          ? declared
-          : undefined;
-      if (total !== undefined) await deps.ensureFreeSpace(total);
-    }
-    writer ??= await deps.openWriter(job.jobId);
-
-    const reader = response.body.getReader();
+    // The fetcher holds a host slot until the body ends: whatever happens below, leave no body
+    // half read, or later downloads from this host would wait for it forever.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let drained = false;
     try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        writer.writeAt(position, value);
-        position += value.byteLength;
-        deps.onProgress?.(position, total);
-        // A buffered fast stream resolves every read as a microtask and would starve the
-        // worker's message queue (cancel requests): give the event loop a turn now and then.
-        if (Date.now() - lastYield > YIELD_INTERVAL_MS) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
-          lastYield = Date.now();
+      if (!response.ok) throw new JobError({ kind: 'http', status: response.status });
+      if (!response.body) throw new Transient(new JobError({ kind: 'incomplete', ratio: 0 }));
+
+      if (resuming) {
+        const range = /^bytes (\d+)-\d+\/(\d+|\*)$/.exec(
+          response.headers.get('content-range') ?? '',
+        );
+        const sizeKnown = range?.[2] !== undefined && range[2] !== '*';
+        if (
+          response.status !== 206 ||
+          Number(range?.[1]) !== position ||
+          (sizeKnown && total !== undefined && Number(range[2]) !== total)
+        ) {
+          position = 0;
+          writer?.truncate(0);
+          if (response.status === 206) {
+            // A partial body that does not continue our bytes is useless, and its length says
+            // nothing about the whole file: drop it and ask again from the start, without Range.
+            await response.body.cancel().catch(() => undefined);
+            validator = undefined;
+            total = undefined;
+            throw new Restart();
+          }
+          // A plain 200 carries the whole file again: read this body from the start.
         }
       }
-    } catch (error) {
-      if (signal.aborted) throw new JobError({ kind: 'cancelled' });
-      // Writer failures (quota, short write) are final; only the network side is retried.
-      if (
-        error instanceof Error &&
-        (error.name === 'QuotaExceededError' || error.message.startsWith('Short OPFS'))
-      ) {
-        throw error;
+      if (position === 0) {
+        const etag = response.headers.get('etag');
+        validator =
+          (etag !== null && !etag.startsWith('W/') ? etag : undefined) ??
+          response.headers.get('last-modified') ??
+          undefined;
+        // A transfer encoding changes the byte count, so only trust the header without one.
+        const declared = Number(response.headers.get('content-length'));
+        total =
+          Number.isFinite(declared) && declared > 0 && !response.headers.has('content-encoding')
+            ? declared
+            : undefined;
+        if (total !== undefined) await deps.ensureFreeSpace(total);
       }
-      throw new Transient(error);
+      writer ??= await deps.openWriter(job.jobId);
+
+      reader = response.body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            drained = true;
+            break;
+          }
+          writer.writeAt(position, value);
+          position += value.byteLength;
+          deps.onProgress?.(position, total);
+          // A buffered fast stream resolves every read as a microtask and would starve the
+          // worker's message queue (cancel requests): give the event loop a turn now and then.
+          if (Date.now() - lastYield > YIELD_INTERVAL_MS) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            lastYield = Date.now();
+          }
+        }
+      } catch (error) {
+        if (signal.aborted) throw new JobError({ kind: 'cancelled' });
+        // Writer failures (quota, short write) are final; only the network side is retried.
+        if (
+          error instanceof Error &&
+          (error.name === 'QuotaExceededError' || error.message.startsWith('Short OPFS'))
+        ) {
+          throw error;
+        }
+        throw new Transient(error);
+      }
+      if (position === 0) throw new JobError({ kind: 'incomplete', ratio: 0 });
+      if (total !== undefined && position < total) {
+        throw new Transient(new JobError({ kind: 'incomplete', ratio: position / total }));
+      }
+      return await writer.finish();
+    } finally {
+      if (!drained) await (reader ?? response.body)?.cancel().catch(() => undefined);
     }
-    if (position === 0) throw new JobError({ kind: 'incomplete', ratio: 0 });
-    if (total !== undefined && position < total) {
-      throw new Transient(new JobError({ kind: 'incomplete', ratio: position / total }));
-    }
-    return writer.finish();
   };
 
   try {
