@@ -35,7 +35,10 @@ async function fetchInput(
   signal: AbortSignal,
 ): Promise<Uint8Array> {
   const response = await deps.fetch(url, { signal });
-  if (!response.ok) throw new JobError({ kind: 'http', status: response.status });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new JobError({ kind: 'http', status: response.status });
+  }
   const declared = Number(response.headers.get('content-length'));
   const total =
     Number.isFinite(declared) && declared > 0 && !response.headers.has('content-encoding')
@@ -83,7 +86,8 @@ async function fetchInput(
 /**
  * TEMPORARY runner behind `download/start-direct` with `remux: 'mp4'` (design §2.3), until the
  * remux pipeline (#22) and the real enqueue flow (#25) exist: fetches one whole media file,
- * stream-copies it into an MP4 written to OPFS and returns the file. No retries. Cancelling
+ * stream-copies it into an MP4 written to OPFS and returns the file. The fetcher retries the
+ * request; a body cut midway is not resumed. Cancelling
  * through `signal` or any failure removes the temporary file.
  */
 export async function runRemuxJob(

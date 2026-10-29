@@ -4,6 +4,8 @@ import { ensureFreeSpace } from '@/src/media/storage';
 import { runDirectJob, toDownloadError } from '@/src/download/direct-job';
 import { runRemuxJob } from '@/src/download/remux-job';
 import { loadLibav } from '@/src/media/libav/loader';
+import { createFetcher } from '@/src/net/fetcher';
+import { rulesFor } from '@/src/rules';
 import { isToWorker, type FromWorker } from '@/src/download/worker-messages';
 
 /** Progress messages are throttled: a fast download would otherwise flood the host. */
@@ -20,6 +22,13 @@ export default defineUnlistedScript(() => {
     postMessage(message: FromWorker): void;
   };
   const controllers = new Map<string, AbortController>();
+  // One fetcher for every job in this worker, so the per-host limit holds across jobs.
+  // The player's cookies come from the header rules (design §4.1.1), never from the jar.
+  // Only the built-in rules apply until the options page (#34) can store the user's own.
+  const fetcher = createFetcher({
+    fetch: (target, init) => fetch(target, { ...init, credentials: 'omit' }),
+    profileFor: (url) => rulesFor(url.hostname).speedProfile,
+  });
 
   scope.onmessage = (event) => {
     if (!isToWorker(event.data)) return;
@@ -32,9 +41,6 @@ export default defineUnlistedScript(() => {
     const controller = new AbortController();
     controllers.set(jobId, controller);
     let lastReport = 0;
-    // The player's cookies come from the header rules (design §4.1.1), never from the jar.
-    const fetchOmit = (target: string, init: RequestInit): Promise<Response> =>
-      fetch(target, { ...init, credentials: 'omit' });
     const common = {
       openWriter: (id: string) => OpfsWriter.open(id),
       ensureFreeSpace: (bytes: number) => ensureFreeSpace(bytes),
@@ -48,8 +54,12 @@ export default defineUnlistedScript(() => {
     const run =
       remux === 'mp4'
         ? // One libav instance per job, created only when the job needs it (design §8).
-          runRemuxJob({ jobId, url }, { ...common, fetch: fetchOmit, loadLibav }, controller.signal)
-        : runDirectJob({ jobId, url }, { ...common, fetch: fetchOmit }, controller.signal);
+          runRemuxJob(
+            { jobId, url },
+            { ...common, fetch: fetcher.fetch, loadLibav },
+            controller.signal,
+          )
+        : runDirectJob({ jobId, url }, { ...common, fetch: fetcher.fetch }, controller.signal);
     run
       .then((file) => {
         scope.postMessage({ type: 'done', jobId, filename, file });
@@ -59,6 +69,8 @@ export default defineUnlistedScript(() => {
       })
       .finally(() => {
         controllers.delete(jobId);
+        // Safety net: frees any host slot a half-read body of this job might still hold.
+        controller.abort();
       });
   };
 });

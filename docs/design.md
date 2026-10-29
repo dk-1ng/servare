@@ -354,11 +354,19 @@ Implemented in #15 (`src/history`). Finished (`done`) and `failed` jobs are reco
 | Standard | up to 4 connections per host                                                      |
 | Fast     | up to 8 connections; direct files with `Accept-Ranges` split into parallel ranges |
 
+**Implemented in #21 (`src/net/fetcher.ts`):** `createFetcher` wraps `fetch` for the download worker, one instance per worker so the limit holds across jobs.
+
+- **Per-host limit.** A FIFO semaphore per `host:port` allows `CONNECTIONS_PER_PROFILE` requests at once (1, 4 or 8). The profile comes from the per-domain rules for the request's host name (`rulesFor`), so only the built-in rules apply until the options page (#34) stores the user's. A slot is held until the response body ends, is cancelled or fails, or the request's signal aborts, and is released while a failed request backs off. Callers must consume or cancel every body.
+- **Request-phase retries.** Network errors and `408`, `429` and `5xx` are retried up to 4 tries with exponential backoff (500 ms base, 30 s cap) scaled to 50-100% by jitter. Other statuses are returned as they are, and so is a transient status that outlasts the retries.
+- **`Retry-After`** (seconds or HTTP date) replaces the backoff for that wait. A `429`, or any retry that carries `Retry-After`, also holds back every other request to the same host for that long. A server asking for more than 120 s is not retried: its response is returned and the job fails with `{ kind: 'http', status }`.
+- **Body-phase retries stay with the job.** A body cut midway is retried by the runner (`src/download/direct-job.ts`) with the same backoff helper, resuming with `Range` (§4.1); the new request goes through the fetcher again.
+- **Not in the fetcher:** the pace of Economy ("close to playback") belongs to the HLS runner, which decides when to ask for the next segment; parallel range splitting for Fast is #33.
+
 ### 4.3 AES-128 (HLS)
 
 Per RFC 8216 §5.2: key fetched from the `EXT-X-KEY` URI (with the player's headers), AES-CBC via WebCrypto, explicit IV or derived from the segment's media sequence number. Keys cached by URI for the duration of the job.
 
-- **Implemented in #20 (`src/crypto/aes128.ts`):** `decryptSegment(data, key, sequence, keys)` decrypts a whole segment with AES-CBC and PKCS#7 padding. The IV is the explicit `IV` or, when absent, the media sequence number as a 128-bit big-endian integer. `KeyCache` takes an injected `KeyFetcher` (the fetcher with header replay arrives in #21), caches the import by URI for the job, and drops a failed fetch so the next segment retries. A key that is not 16 bytes, a segment whose length is not a multiple of 16, a bad IV or a WebCrypto failure all throw `DecryptError` (`kind: 'decrypt'`). Padding is checked by WebCrypto, so a wrong key is usually reported but can occasionally decrypt to garbage.
+- **Implemented in #20 (`src/crypto/aes128.ts`):** `decryptSegment(data, key, sequence, keys)` decrypts a whole segment with AES-CBC and PKCS#7 padding. The IV is the explicit `IV` or, when absent, the media sequence number as a 128-bit big-endian integer. `KeyCache` takes an injected `KeyFetcher` (the HLS runner will build it on the fetcher of §4.2), caches the import by URI for the job, and drops a failed fetch so the next segment retries. A key that is not 16 bytes, a segment whose length is not a multiple of 16, a bad IV or a WebCrypto failure all throw `DecryptError` (`kind: 'decrypt'`). Padding is checked by WebCrypto, so a wrong key is usually reported but can occasionally decrypt to garbage.
 
 ### 4.4 Remux
 
