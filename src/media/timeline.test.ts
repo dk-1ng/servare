@@ -120,6 +120,21 @@ describe('Timeline', () => {
     expect(dtsOf(placed.find((p) => p.stream_index === 0)!)).toBe(360000 - 6000);
   });
 
+  it('reports as gap only the skipped time a later segment follows', () => {
+    const timeline = new Timeline();
+    timeline.place(segment(126000));
+    timeline.skip(2_000_000);
+    expect(timeline.gapUs).toBe(0);
+    timeline.place(segment(126000 + 360000));
+    expect(timeline.gapUs).toBe(2_000_000);
+    const duration = timeline.durationUs;
+    // A trailing run of skipped segments: no gap, the output just ends earlier.
+    timeline.skip(2_000_000);
+    timeline.skip(2_000_000);
+    expect(timeline.gapUs).toBe(2_000_000);
+    expect(timeline.durationUs).toBe(duration);
+  });
+
   it('places a re-anchored segment after the skipped time', () => {
     const timeline = new Timeline();
     timeline.place(segment(126000));

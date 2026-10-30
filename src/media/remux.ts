@@ -42,10 +42,18 @@ export interface RemuxResult {
   /** Bytes in the output. */
   size: number;
   container: Container;
-  /** Latest presentation end of the output, skipped gaps included. */
+  /**
+   * Latest presentation end of the output. Gaps left by skipped segments inside the output are
+   * part of it (`gapSeconds`); skipped segments at the end are not.
+   */
   durationSeconds: number;
-  /** Total duration of the segments left out (their gaps stay in the output). */
+  /** Total `EXTINF` duration of the segments left out, wherever they were. */
   skippedSeconds: number;
+  /**
+   * Skipped time that became a gap inside the output (a later segment followed it). The time
+   * covered with media is `durationSeconds - gapSeconds` (design §4.8).
+   */
+  gapSeconds: number;
 }
 
 export interface RemuxerOptions {
@@ -321,6 +329,7 @@ class LibavRemuxer implements Remuxer {
       container,
       durationSeconds: this.#timeline.durationUs / 1_000_000,
       skippedSeconds: this.#skippedUs / 1_000_000,
+      gapSeconds: this.#timeline.gapUs / 1_000_000,
     };
   }
 

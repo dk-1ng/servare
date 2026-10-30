@@ -25,6 +25,11 @@ export const PLAYLIST_LIMIT = 4 * 1024 ** 2;
 export const SEGMENT_LIMIT = 128 * 1024 ** 2;
 /** An AES-128 key is 16 bytes; anything much larger is not a key. */
 export const KEY_LIMIT = 1024;
+/**
+ * Segment bytes fetched ahead and not yet remuxed beyond which no further prefetch starts; the
+ * next segment needed is always fetched (design §4.4).
+ */
+export const PREFETCH_BUDGET_BYTES = 256 * 1024 ** 2;
 /** Share of failed segments the job tolerates (design §4.8). */
 export const DEFAULT_FAILURE_THRESHOLD = 0.2;
 
@@ -45,6 +50,8 @@ export interface HlsJobDeps {
   createRemuxer?: (libav: Libav, write: PositionalWrite, options: RemuxerOptions) => Remuxer;
   /** Segments fetched ahead of the one being remuxed (the speed profile's connections). */
   concurrency: number;
+  /** Bytes fetched ahead beyond which no further prefetch starts (default 256 MiB). */
+  prefetchBudgetBytes?: number;
   /** Share of segments that may fail before the job does (default 0.2, design §4.8). */
   failureThreshold?: number;
   /** Downloaded bytes so far; the total of a playlist is not known in advance. */
@@ -60,13 +67,27 @@ export interface HlsJobDeps {
 export interface HlsJobResult {
   file: File;
   container: Container;
-  /** Segments left out after their failure (design §4.8); their gaps stay in the output. */
+  /** Segments left out after their failure (design §4.8). */
   skippedSegments: number;
+  /** Their total `EXTINF` duration, wherever they were. */
   skippedSeconds: number;
-  /** Duration of the output, gaps included. */
+  /**
+   * Latest presentation end of the output: gaps of skipped segments inside it included, skipped
+   * segments at the end not (the output just ends earlier).
+   */
   durationSeconds: number;
+  /**
+   * Skipped time that became a gap inside the output. The 97% check (#24) uses the covered
+   * duration, `durationSeconds - gapSeconds`, against `expectedSeconds` (design §4.8).
+   */
+  gapSeconds: number;
   /** Sum of the playlist's `EXTINF`. */
   expectedSeconds: number;
+}
+
+/** Bytes received so far for one segment (failed attempts taken back out). */
+interface Meter {
+  bytes: number;
 }
 
 /** Thrown inside an attempt for failures worth another try (a body cut midway). */
@@ -176,6 +197,7 @@ class HlsRunner {
         skippedSegments: skipped.segments,
         skippedSeconds: skipped.seconds,
         durationSeconds: result.durationSeconds,
+        gapSeconds: result.gapSeconds,
         expectedSeconds: playlist.duration,
       };
     } catch (error) {
@@ -220,13 +242,35 @@ class HlsRunner {
     const { segments } = playlist;
     const threshold = this.deps.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD;
     const ahead = Math.max(1, Math.floor(this.deps.concurrency));
-    const tasks = new Map<number, Promise<Uint8Array>>();
+    const budget = this.deps.prefetchBudgetBytes ?? PREFETCH_BUDGET_BYTES;
+    const tasks = new Map<number, { data: Promise<Uint8Array>; meter: Meter; done: boolean }>();
+    /** Sizes of the segments fetched so far, to estimate those still arriving. */
+    const sizes = { bytes: 0, count: 0 };
     const prefetch = (index: number): void => {
       const segment = segments[index];
       if (!segment || tasks.has(index)) return;
-      const task = this.#segmentData(segment);
-      task.catch(() => undefined); // awaited in order below; a failure is handled there
+      const meter: Meter = { bytes: 0 };
+      const task = { data: this.#segmentData(segment, meter), meter, done: false };
+      task.data.then(
+        () => {
+          task.done = true;
+          sizes.bytes += meter.bytes;
+          sizes.count++;
+        },
+        () => {
+          task.done = true; // awaited in order below; a failure is handled there
+        },
+      );
       tasks.set(index, task);
+    };
+    /** Bytes held or expected for the segments fetched ahead (estimated while they arrive). */
+    const buffered = (): number => {
+      const average = sizes.count > 0 ? sizes.bytes / sizes.count : 0;
+      let total = 0;
+      for (const task of tasks.values()) {
+        total += task.done ? task.meter.bytes : Math.max(task.meter.bytes, average);
+      }
+      return total;
     };
 
     let failed = 0;
@@ -234,11 +278,14 @@ class HlsRunner {
     /** A discontinuity on a skipped segment still applies to the next one placed. */
     let discontinuity = false;
     for (const [index, segment] of segments.entries()) {
-      for (let next = index; next < index + ahead; next++) prefetch(next);
+      prefetch(index); // the segment needed next always goes, whatever the budget
+      for (let next = index + 1; next < index + ahead && buffered() < budget; next++) {
+        prefetch(next);
+      }
       let failure: { error: unknown } | undefined;
       let data: Uint8Array | undefined;
       try {
-        data = await tasks.get(index);
+        data = await tasks.get(index)?.data;
       } catch (error) {
         failure = { error };
       }
@@ -268,9 +315,15 @@ class HlsRunner {
   }
 
   /** One segment ready to demux: init section in front, both decrypted. */
-  async #segmentData(segment: Segment): Promise<Uint8Array> {
+  async #segmentData(segment: Segment, meter: Meter): Promise<Uint8Array> {
     const init = segment.map ? this.#init(segment.map) : undefined;
-    let { bytes } = await this.#fetchBytes(segment.uri, segment.byteRange, SEGMENT_LIMIT, true);
+    let { bytes } = await this.#fetchBytes(
+      segment.uri,
+      segment.byteRange,
+      SEGMENT_LIMIT,
+      true,
+      meter,
+    );
     if (segment.key) {
       bytes = new Uint8Array(
         await decryptSegment(bufferOf(bytes), segment.key, segment.sequence, this.#keys),
@@ -314,10 +367,11 @@ class HlsRunner {
     range: ByteRange | undefined,
     limit: number,
     counted: boolean,
+    meter?: Meter,
   ): Promise<{ bytes: Uint8Array; url: string }> {
     for (let tries = 1; ; tries++) {
       try {
-        return await this.#attempt(url, range, limit, counted);
+        return await this.#attempt(url, range, limit, counted, meter);
       } catch (error) {
         if (this.signal.aborted) throw new JobError({ kind: 'cancelled' });
         if (!(error instanceof Transient)) throw error;
@@ -332,6 +386,7 @@ class HlsRunner {
     range: ByteRange | undefined,
     limit: number,
     counted: boolean,
+    meter: Meter | undefined,
   ): Promise<{ bytes: Uint8Array; url: string }> {
     const init: { signal: AbortSignal; headers?: Record<string, string> } = {
       signal: this.signal,
@@ -387,6 +442,7 @@ class HlsRunner {
             break;
           }
           received += value.byteLength;
+          if (meter) meter.bytes += value.byteLength;
           let chunk = value;
           if (skip > 0) {
             const dropped = Math.min(skip, chunk.byteLength);
@@ -428,6 +484,7 @@ class HlsRunner {
     } catch (error) {
       // Bytes of a failed attempt are counted again by the next one.
       if (counted && received > 0) this.#downloaded -= received;
+      if (meter) meter.bytes -= received;
       throw error;
     } finally {
       if (!drained) await (reader ?? response.body)?.cancel().catch(() => undefined);

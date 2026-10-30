@@ -126,8 +126,9 @@ describe('runHlsJob with libav', () => {
       });
       expect(result.skippedSegments).toBe(1);
       expect(result.skippedSeconds).toBe(2);
+      expect(result.gapSeconds).toBe(2);
       // The covered duration (#24) is the output's minus the gap.
-      expect(result.durationSeconds - result.skippedSeconds).toBeCloseTo(4, 1);
+      expect(result.durationSeconds - result.gapSeconds).toBeCloseTo(4, 1);
       if (!hasFfprobe) return;
       const info = probe(file);
       expect(Math.abs(Number(info.format.duration) - 6)).toBeLessThanOrEqual(0.1);
@@ -137,6 +138,25 @@ describe('runHlsJob with libav', () => {
         expect(stream.gaps).toHaveLength(1);
         expect(Math.abs(stream.gaps[0]! - 2)).toBeLessThanOrEqual(0.1);
       }
+      expect(decodeErrors(file)).toBe('');
+    },
+    60_000,
+  );
+
+  it.skipIf(!have('hls/variants/hi_002.ts'))(
+    'ends earlier, without a gap, when the last segment failed',
+    async () => {
+      const { result, file } = await download('hls/variants/hi.m3u8', {
+        failing: ['hls/variants/hi_002.ts'],
+        failureThreshold: 0.5,
+      });
+      expect(result.skippedSeconds).toBe(2);
+      expect(result.gapSeconds).toBe(0);
+      expect(result.durationSeconds - result.gapSeconds).toBeCloseTo(4, 1);
+      if (!hasFfprobe) return;
+      const info = probe(file);
+      expect(Math.abs(Number(info.format.duration) - 4)).toBeLessThanOrEqual(0.1);
+      expect(packetCount(info, 'video')).toBe(60);
       expect(decodeErrors(file)).toBe('');
     },
     60_000,

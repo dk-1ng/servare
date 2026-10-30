@@ -58,7 +58,7 @@ function fakeRemuxer(refuse: (data: string) => SegmentError | undefined = () => 
     },
     async finish(): Promise<RemuxResult> {
       const skippedSeconds = remuxer.skipped.reduce((a, b) => a + b, 0);
-      return { size: 10, container: 'mp4', durationSeconds: 99, skippedSeconds };
+      return { size: 10, container: 'mp4', durationSeconds: 99, skippedSeconds, gapSeconds: 7 };
     },
     async dispose() {
       remuxer.disposed++;
@@ -151,6 +151,7 @@ describe('runHlsJob', () => {
       skippedSegments: 0,
       skippedSeconds: 0,
       durationSeconds: 99,
+      gapSeconds: 7,
       expectedSeconds: 12,
     });
     expect(s.remuxer.added.map((a) => a.data)).toEqual(
@@ -163,6 +164,48 @@ describe('runHlsJob', () => {
     expect(options?.forwardJumpLimitSeconds).toBe(10);
     expect(s.remuxer.disposed).toBe(1);
     expect(s.deps.onProgress).toHaveBeenLastCalledWith(24, undefined);
+  });
+
+  it('stops prefetching while the bytes fetched ahead exceed the budget', async () => {
+    // 20 segments of 10 bytes; the first one answers last, so the others pile up meanwhile.
+    const requested: number[] = [];
+    let consumed = 0;
+    const routes: Record<string, Route> = { 'index.m3u8': ok(playlist(20)) };
+    for (let i = 0; i < 20; i++) {
+      routes[`s${String(i)}.ts`] = () => {
+        // Segments fetched ahead and not yet remuxed, when this request goes out.
+        requested.push(i - consumed);
+        return new Response(
+          new ReadableStream({
+            async pull(controller) {
+              if (i === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+              controller.enqueue(text(`segment${String(i).padStart(3, '0')}`)); // 10 bytes
+              controller.close();
+            },
+          }),
+        );
+      };
+    }
+    const remuxer = fakeRemuxer();
+    const add = remuxer.add.bind(remuxer);
+    remuxer.add = async (segment) => {
+      await add(segment);
+      consumed++;
+    };
+    const s = setup(routes, { concurrency: 8, prefetchBudgetBytes: 25 }, remuxer);
+    await runHlsJob(job, s.deps);
+    expect(remuxer.added).toHaveLength(20);
+    // The first pass knows no sizes yet and fills the window; after it, at most the budget
+    // (two segments) is held ahead, plus the one being requested.
+    expect(requested.slice(0, 8)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(Math.max(...requested.slice(8))).toBeLessThanOrEqual(3);
+
+    // Without a budget the window stays full.
+    consumed = 0;
+    requested.length = 0;
+    const free = setup(routes, { concurrency: 8 }, fakeRemuxer());
+    await runHlsJob(job, free.deps);
+    expect(Math.max(...requested.slice(8))).toBeGreaterThan(3);
   });
 
   it('fails with the error of the first segment', async () => {

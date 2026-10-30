@@ -211,6 +211,7 @@ describe('createRemuxer', () => {
         await remuxer.add({ data: read(TS[2]!) });
         const result = await remuxer.finish();
         expect(result.skippedSeconds).toBe(2);
+        expect(result.gapSeconds).toBe(2);
         expect(result.durationSeconds).toBeCloseTo(6, 1);
       } finally {
         await remuxer.dispose();
@@ -226,6 +227,26 @@ describe('createRemuxer', () => {
         expect(Math.abs(stream.gaps[0]! - 2)).toBeLessThanOrEqual(0.1);
       }
       expect(decodeErrors(file)).toBe('');
+    },
+    60_000,
+  );
+
+  it.skipIf(!have(...TS))(
+    'leaves no gap for skipped segments at the end',
+    async () => {
+      const libav = await newLibav();
+      const remuxer = createRemuxer(libav, memoryFile().write);
+      try {
+        await remuxer.add({ data: read(TS[0]!) });
+        remuxer.skip(2);
+        remuxer.skip(2);
+        const result = await remuxer.finish();
+        expect(result.skippedSeconds).toBe(4);
+        expect(result.gapSeconds).toBe(0);
+        expect(result.durationSeconds).toBeCloseTo(2, 1);
+      } finally {
+        await remuxer.dispose();
+      }
     },
     60_000,
   );

@@ -84,15 +84,28 @@ export class Timeline {
   #offsetUs: number | undefined;
   /** Skipped since the last placed segment. */
   #pendingSkipUs = 0;
+  /** Skipped time that a later segment turned into a gap inside the output. */
+  #gapUs = 0;
   readonly #streams = new Map<number, StreamState>();
 
   constructor(options: TimelineOptions = {}) {
     this.#forwardLimitUs = options.forwardLimitUs ?? 10_000_000;
   }
 
-  /** A segment left out (design §4.4: its duration stays as a gap). */
+  /**
+   * A segment left out (design §4.4). Its duration becomes a gap once a later segment is placed;
+   * skipped segments at the very end leave no gap, the output just ends earlier.
+   */
   skip(us: number): void {
     if (us > 0) this.#pendingSkipUs += us;
+  }
+
+  /**
+   * Skipped time inside the output, in µs: what `skip` added before a segment that was then
+   * placed. `durationUs - gapUs` is the time the output covers with media.
+   */
+  get gapUs(): number {
+    return this.#gapUs;
   }
 
   /** Latest end of any output stream, in µs; 0 before the first packet. */
@@ -124,6 +137,7 @@ export class Timeline {
   ): P[] {
     if (packets.length === 0) return [];
     this.#anchor(packets, options.discontinuity === true);
+    this.#gapUs += this.#pendingSkipUs;
     this.#pendingSkipUs = 0;
     // A step across segments can span a gap or a reset: estimate only from steps inside one.
     for (const state of this.#streams.values()) state.lastSourceDts = undefined;
@@ -218,8 +232,10 @@ export class Timeline {
     });
     if (!discontinuity && !jumped) return;
 
-    // Re-anchor: the segment starts after the skipped time, at the end of the output, with no
-    // stream starting before its own end (a stream whose source starts later keeps its lead).
+    // Re-anchor: the smallest offset that puts no stream's first DTS before its own end (plus
+    // the skipped time). The stream needing the largest shift continues exactly at its end; the
+    // others keep the segment's own A/V lead, so they may get a gap as large as the change in
+    // the source's lead (a silence or held frame instead of dropped packets).
     let needed = Number.NEGATIVE_INFINITY;
     for (const [stream, first] of firstUs) {
       const end = this.#streams.get(stream)?.endUs;

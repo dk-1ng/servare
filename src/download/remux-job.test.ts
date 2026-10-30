@@ -39,7 +39,7 @@ function setup(response: Response, remux?: typeof remuxFile) {
         // Out of order, as the MP4 muxer does when it patches the header.
         write(4, new Uint8Array([9, 9]));
         write(0, new Uint8Array([1, 2, 3, 4]));
-        return { size: 6, container: 'mp4', durationSeconds: 1, skippedSeconds: 0 };
+        return { size: 6, container: 'mp4', durationSeconds: 1, skippedSeconds: 0, gapSeconds: 0 };
       }),
   };
   return { deps, writer, writes, file, inputs };
@@ -152,6 +152,7 @@ describe('runRemuxJob', () => {
         container: 'mp4',
         durationSeconds: 0,
         skippedSeconds: 0,
+        gapSeconds: 0,
       })),
     );
     const error = await runRemuxJob(job, s.deps).catch((e: unknown) => e);
