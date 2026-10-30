@@ -137,6 +137,19 @@ describe('media playlist semantics', () => {
     expect(p.segments.map((s) => s.key?.method)).toEqual([undefined, 'AES-128', undefined]);
   });
 
+  it('records on EXT-X-MAP the key in effect where the tag appears', () => {
+    const p = media(
+      '#EXTM3U\n#EXT-X-MAP:URI="clear.mp4"\n#EXT-X-KEY:METHOD=AES-128,URI="k",IV=0x1\n#EXTINF:1,\na.m4s\n' +
+        '#EXT-X-MAP:URI="enc.mp4"\n#EXTINF:1,\nb.m4s\n#EXT-X-KEY:METHOD=NONE\n#EXT-X-MAP:URI="c.mp4"\n#EXTINF:1,\nc.m4s\n',
+    );
+    expect(p.segments.map((s) => [s.map?.uri.slice(BASE.length), s.map?.key?.uri])).toEqual([
+      ['clear.mp4', undefined],
+      ['enc.mp4', BASE + 'k'],
+      ['c.mp4', undefined],
+    ]);
+    expect(p.segments[1]!.map?.key?.iv).toBe('00000000000000000000000000000001');
+  });
+
   it('flags other methods and key formats as protected, without exposing the key URI', () => {
     for (const attrs of [
       'METHOD=SAMPLE-AES,URI="k"',
@@ -264,6 +277,11 @@ describe('containerForCodecs', () => {
     ['av01.0.04M.08,opus', 'webm'],
     ['avc1.4d4015,opus', 'mkv'],
     ['vp9,mp4a.40.2', 'mkv'],
+    ['vp8,vorbis', 'webm'],
+    ['avc1.4d4015,ec-3', 'mp4'],
+    ['vp09.00.10.08,fLaC', 'mkv'],
+    ['avc1.4d4015,mp4a.40.2,stpp.ttml.im1t', 'mp4'],
+    ['wvtt', undefined],
     ['avc1.4d4015,mystery.1', undefined],
     ['', undefined],
     [undefined, undefined],
