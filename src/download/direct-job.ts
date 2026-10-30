@@ -1,5 +1,9 @@
+import { DecryptError } from '../crypto/aes128';
+import { ProtectedContentError } from '../manifest/protection';
 import type { DownloadError } from '../messaging/schemas';
+import { SegmentError } from '../media/remux';
 import { QuotaError } from '../media/storage';
+import { UnsupportedMediaError } from '../media/streams';
 import { abortableSleep, backoffDelay, DEFAULT_RETRY, type RetryPolicy } from '../net/fetcher';
 
 /** The subset of `OpfsWriter` the runner needs. */
@@ -61,6 +65,12 @@ export class JobError extends Error {
 export function toDownloadError(error: unknown): DownloadError {
   if (error instanceof JobError) return error.detail;
   if (error instanceof QuotaError) return { kind: 'quota' };
+  if (error instanceof DecryptError) return { kind: 'decrypt' };
+  if (error instanceof ProtectedContentError) return { kind: 'protected' };
+  // Media the pipeline cannot save (design §4.4): the message names the codec or the problem.
+  if (error instanceof UnsupportedMediaError || error instanceof SegmentError) {
+    return { kind: 'unknown', message: error.message };
+  }
   // OPFS reports a full disk as QuotaExceededError.
   if (error instanceof Error && error.name === 'QuotaExceededError') return { kind: 'quota' };
   return { kind: 'unknown', message: error instanceof Error ? error.message : String(error) };
