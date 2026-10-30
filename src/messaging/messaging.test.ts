@@ -10,6 +10,7 @@ import {
   PortClient,
   PortServer,
   handleRequest,
+  requestSchemas,
 } from './index';
 
 const ORIGIN = 'moz-extension://abc/';
@@ -112,6 +113,18 @@ describe('schemas', () => {
     expect(DownloadErrorSchema.safeParse({ kind: 'http', status: 403 }).success).toBe(true);
     expect(DownloadErrorSchema.safeParse({ kind: 'http' }).success).toBe(false);
     expect(DownloadErrorSchema.safeParse({ kind: 'incomplete', ratio: 2 }).success).toBe(false);
+  });
+
+  it('takes hls or remux on the temporary start requests, never both', () => {
+    const start = { url: 'https://x.test/a.m3u8', filename: 'a.mp4' };
+    const direct = requestSchemas['download/start-direct'].request;
+    expect(direct.safeParse({ ...start, hls: true }).success).toBe(true);
+    expect(direct.safeParse({ ...start, remux: 'mp4' }).success).toBe(true);
+    expect(direct.safeParse({ ...start, hls: false }).success).toBe(false);
+    expect(direct.safeParse({ ...start, hls: true, remux: 'mp4' }).success).toBe(false);
+    const worker = requestSchemas['worker/start'].request;
+    expect(worker.safeParse({ ...start, jobId: 'j', hls: true }).success).toBe(true);
+    expect(worker.safeParse({ ...start, jobId: 'j', hls: true, remux: 'mp4' }).success).toBe(false);
   });
 });
 

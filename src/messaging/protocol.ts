@@ -2,6 +2,15 @@ import { z } from 'zod';
 import { DownloadErrorSchema, DownloadJobSchema, MediaItemSchema, TrackSchema } from './schemas';
 import { HistoryEntrySchema } from '../history';
 
+/** `hls` already remuxes: a request cannot ask for both. */
+function notBothHlsAndRemux(request: {
+  hls?: true | undefined;
+  remux?: 'mp4' | undefined;
+}): boolean {
+  return !(request.hls && request.remux);
+}
+const HLS_AND_REMUX = { message: 'hls and remux cannot be combined' };
+
 /**
  * Every request the background answers, with its payload and response schema.
  * Detailed semantics live in docs/ui-contract.md.
@@ -57,12 +66,15 @@ export const requestSchemas = {
   },
   /** Background → worker host (over `runtime.sendMessage`): run a job in the download worker. */
   'worker/start': {
-    request: z.object({
-      jobId: z.string(),
-      url: z.url().max(8192),
-      filename: z.string().min(1).max(255),
-      remux: z.literal('mp4').optional(),
-    }),
+    request: z
+      .object({
+        jobId: z.string(),
+        url: z.url().max(8192),
+        filename: z.string().min(1).max(255),
+        remux: z.literal('mp4').optional(),
+        hls: z.literal(true).optional(),
+      })
+      .refine(notBothHlsAndRemux, HLS_AND_REMUX),
     response: z.null(),
   },
   'history/list': {
@@ -101,17 +113,25 @@ export const requestSchemas = {
    * saves a single http(s) URL as a direct file. Only extension pages can reach it.
    */
   'download/start-direct': {
-    request: z.object({
-      url: z.url({ protocol: /^https?$/ }).max(8192),
-      filename: z.string().min(1).max(255),
-      /** Tab whose player headers (Referer, Origin, Cookie) the download replays (§4.1.1). */
-      tabId: z.number().int().optional(),
-      /**
-       * TEMPORARY (until #25): stream-copy the file into an MP4 with libav.js in the worker.
-       * The whole input is fetched first, so it is capped at 64 MiB.
-       */
-      remux: z.literal('mp4').optional(),
-    }),
+    request: z
+      .object({
+        url: z.url({ protocol: /^https?$/ }).max(8192),
+        filename: z.string().min(1).max(255),
+        /** Tab whose player headers (Referer, Origin, Cookie) the download replays (§4.1.1). */
+        tabId: z.number().int().optional(),
+        /**
+         * TEMPORARY (until #25): stream-copy the file with libav.js in the worker, into the
+         * container its codecs call for (MP4 for H.264/AAC). The whole input is fetched first,
+         * so it is capped at 64 MiB.
+         */
+        remux: z.literal('mp4').optional(),
+        /**
+         * TEMPORARY (until #25): `url` is an HLS media playlist; its segments are downloaded and
+         * remuxed (design §4.4). The delivered name gets the container's extension.
+         */
+        hls: z.literal(true).optional(),
+      })
+      .refine(notBothHlsAndRemux, HLS_AND_REMUX),
     response: z.object({ jobId: z.string() }),
   },
 } as const;

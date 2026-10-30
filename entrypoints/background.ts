@@ -355,7 +355,7 @@ type HeaderMap = Parameters<HeaderReplay['apply']>[1];
 const handlers: Partial<Handlers> = {
   'media/list': ({ tabId }) => tabList.items(tabId),
   // Temporary development/E2E trigger; see 'download/start-direct' in the protocol.
-  'download/start-direct': async ({ url, filename, tabId, remux }) => {
+  'download/start-direct': async ({ url, filename, tabId, remux, hls }) => {
     const jobId = crypto.randomUUID();
     // Without a known tab there is no way to tell whether the page is private: record nothing.
     const tab =
@@ -389,7 +389,7 @@ const handlers: Partial<Handlers> = {
         await requestOverRuntime(
           browser.runtime,
           'worker/start',
-          { jobId, url, filename, ...(remux && { remux }) },
+          { jobId, url, filename, ...(remux && { remux }), ...(hls && { hls }) },
           { retries: 25, delay: 200 },
         );
       });
@@ -437,7 +437,10 @@ const handlers: Partial<Handlers> = {
   'delivery/deliver': async (request) => {
     // On failure the host cleans up and reports `worker/failed`, which settles the job; closing
     // the host here could cut that cleanup short.
-    const job = (await runningStore.get())[request.jobId];
+    const stored = (await runningStore.get())[request.jobId];
+    // The worker names the file after its container (design §4.4), which may change the
+    // extension of the name the job started with.
+    const job = stored && { ...stored, outputName: request.filename };
     // A job that is unknown (or persisted before `private` existed) is treated as private.
     const downloadId = await delivery.deliver({
       ...request,

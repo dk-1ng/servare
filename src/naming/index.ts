@@ -145,3 +145,23 @@ export function buildFileName(
   const folder = sanitizeSubfolder(options.subfolder);
   return folder === '' ? name : `${folder}/${name}`;
 }
+
+/** Extensions a media name may end with before the container is known (design §4.4). */
+const MEDIA_EXTENSION = /\.(mp4|m4v|mkv|webm|ts|m3u8|mov)$/i;
+
+/**
+ * Gives a finished file the extension of its container: a trailing media extension is replaced,
+ * anything else keeps its text and gets the extension appended. The base is shortened when
+ * needed so the name stays within the limits of §7. A folder part (`a/b/name`) is kept as is.
+ */
+export function withExtension(name: string, extension: string): string {
+  const slash = name.lastIndexOf('/');
+  const folder = slash < 0 ? '' : name.slice(0, slash + 1);
+  const file = name.slice(slash + 1);
+  const ext = cleanExtension(extension);
+  const base = file.replace(MEDIA_EXTENSION, '');
+  const budget = Math.max(1, MAX_NAME_LENGTH - Array.from(ext).length);
+  const byteBudget = Math.max(1, MAX_NAME_BYTES - encoder.encode(ext).length);
+  const cut = stripEdges(truncate(base, budget, byteBudget)) || FALLBACK_NAME;
+  return folder + cut + ext;
+}

@@ -2,9 +2,12 @@ import { defineUnlistedScript } from 'wxt/utils/define-unlisted-script';
 import { OpfsWriter } from '@/src/media/opfs-writer';
 import { ensureFreeSpace } from '@/src/media/storage';
 import { runDirectJob, toDownloadError } from '@/src/download/direct-job';
+import { runHlsJob } from '@/src/download/hls-job';
 import { runRemuxJob } from '@/src/download/remux-job';
+import { FILE_EXTENSION } from '@/src/media/container';
 import { loadLibav } from '@/src/media/libav/loader';
-import { createFetcher } from '@/src/net/fetcher';
+import { CONNECTIONS_PER_PROFILE, createFetcher } from '@/src/net/fetcher';
+import { withExtension } from '@/src/naming';
 import { rulesFor } from '@/src/rules';
 import { isToWorker, type FromWorker } from '@/src/download/worker-messages';
 
@@ -13,8 +16,8 @@ const PROGRESS_INTERVAL_MS = 250;
 
 /**
  * The download worker (module Web Worker, created by the worker host page; design §2.3).
- * For now it only knows direct files, optionally stream-copied into an MP4 (temporary, see
- * `runRemuxJob`): HLS, DASH and the queue arrive with #21 and #25.
+ * It knows direct files, optionally stream-copied (temporary, see `runRemuxJob`), and HLS media
+ * playlists (`runHlsJob`); DASH and the queue arrive with #26 and #25.
  */
 export default defineUnlistedScript(() => {
   const scope = self as unknown as {
@@ -37,7 +40,7 @@ export default defineUnlistedScript(() => {
       controllers.get(message.jobId)?.abort();
       return;
     }
-    const { jobId, url, filename, remux } = message;
+    const { jobId, url, filename, remux, hls } = message;
     const controller = new AbortController();
     controllers.set(jobId, controller);
     let lastReport = 0;
@@ -51,18 +54,49 @@ export default defineUnlistedScript(() => {
         scope.postMessage({ type: 'progress', jobId, bytesWritten, total });
       },
     };
-    const run =
-      remux === 'mp4'
-        ? // One libav instance per job, created only when the job needs it (design §8).
-          runRemuxJob(
-            { jobId, url },
-            { ...common, fetch: fetcher.fetch, loadLibav },
-            controller.signal,
-          )
-        : runDirectJob({ jobId, url }, { ...common, fetch: fetcher.fetch }, controller.signal);
-    run
-      .then((file) => {
-        scope.postMessage({ type: 'done', jobId, filename, file });
+    /** The finished file, and the name it is delivered under (the container's extension). */
+    const run = async (): Promise<{ file: File; name: string }> => {
+      if (hls) {
+        // One libav instance per job, created only when the job needs it (design §8). Segments
+        // are fetched as far ahead as the speed profile allows connections (§4.2).
+        const profile = rulesFor(new URL(url).hostname).speedProfile;
+        const result = await runHlsJob(
+          { jobId, url },
+          {
+            onProgress: common.onProgress,
+            openWriter: common.openWriter,
+            fetch: fetcher.fetch,
+            loadLibav,
+            concurrency: CONNECTIONS_PER_PROFILE[profile],
+          },
+          controller.signal,
+        );
+        return {
+          file: result.file,
+          name: withExtension(filename, FILE_EXTENSION[result.container]),
+        };
+      }
+      if (remux === 'mp4') {
+        const result = await runRemuxJob(
+          { jobId, url },
+          { ...common, fetch: fetcher.fetch, loadLibav },
+          controller.signal,
+        );
+        return {
+          file: result.file,
+          name: withExtension(filename, FILE_EXTENSION[result.container]),
+        };
+      }
+      const file = await runDirectJob(
+        { jobId, url },
+        { ...common, fetch: fetcher.fetch },
+        controller.signal,
+      );
+      return { file, name: filename };
+    };
+    run()
+      .then(({ file, name }) => {
+        scope.postMessage({ type: 'done', jobId, filename: name, file });
       })
       .catch((error: unknown) => {
         scope.postMessage({ type: 'failed', jobId, error: toDownloadError(error) });

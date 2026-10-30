@@ -3,8 +3,11 @@ import {
   buildFileName,
   expandTemplate,
   formatDate,
+  MAX_NAME_BYTES,
+  MAX_NAME_LENGTH,
   sanitizeFileName,
   sanitizeSubfolder,
+  withExtension,
 } from './index';
 
 describe('sanitizeFileName', () => {
@@ -163,5 +166,33 @@ describe('buildFileName', () => {
 describe('formatDate', () => {
   it('pads month and day', () => {
     expect(formatDate(new Date(2026, 0, 5))).toBe('2026-01-05');
+  });
+});
+
+describe('withExtension', () => {
+  it.each([
+    ['clip.mp4', 'mp4', 'clip.mp4'],
+    ['clip.MP4', 'mp4', 'clip.mp4'],
+    ['clip.ts', 'mp4', 'clip.mp4'],
+    ['clip.m3u8', 'mkv', 'clip.mkv'],
+    ['clip.mp4', 'webm', 'clip.webm'],
+    ['clip.mov', 'mp4', 'clip.mp4'],
+    ['clip.m4v', 'mkv', 'clip.mkv'],
+    ['clip', 'mp4', 'clip.mp4'],
+    ['Season 1.Episode 2', 'mp4', 'Season 1.Episode 2.mp4'],
+    ['notes.txt', 'webm', 'notes.txt.webm'],
+    ['folder/clip.ts', 'mp4', 'folder/clip.mp4'],
+    ['.mp4', 'webm', 'video.webm'],
+  ])('%s + %s → %s', (name, extension, expected) => {
+    expect(withExtension(name, extension)).toBe(expected);
+  });
+
+  it('shortens the base to keep the length and byte limits', () => {
+    const long = withExtension(`${'a'.repeat(178)}.ts`, 'webm');
+    expect(long).toBe(`${'a'.repeat(175)}.webm`);
+    expect(Array.from(long)).toHaveLength(MAX_NAME_LENGTH);
+    const wide = withExtension('é'.repeat(119), 'webm');
+    expect(new TextEncoder().encode(wide).length).toBeLessThanOrEqual(MAX_NAME_BYTES);
+    expect(wide.endsWith('.webm')).toBe(true);
   });
 });
