@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DecryptError } from '../crypto/aes128';
+import { ProtectedContentError } from '../manifest/protection';
+import { SegmentError } from '../media/remux';
 import { QuotaError } from '../media/storage';
+import { UnsupportedMediaError } from '../media/streams';
 import { JobError, runDirectJob, toDownloadError, type JobWriter } from './direct-job';
 
 function body(...chunks: number[][]): ReadableStream<Uint8Array> {
@@ -256,5 +260,18 @@ describe('toDownloadError', () => {
   it('keeps other errors as unknown with their message', () => {
     expect(toDownloadError(new Error('boom'))).toEqual({ kind: 'unknown', message: 'boom' });
     expect(toDownloadError('str')).toEqual({ kind: 'unknown', message: 'str' });
+  });
+
+  it('maps decryption, protection and media errors', () => {
+    expect(toDownloadError(new DecryptError('bad key'))).toEqual({ kind: 'decrypt' });
+    expect(toDownloadError(new ProtectedContentError())).toEqual({ kind: 'protected' });
+    expect(toDownloadError(new UnsupportedMediaError('Unsupported codec dts'))).toEqual({
+      kind: 'unknown',
+      message: 'Unsupported codec dts',
+    });
+    expect(toDownloadError(new SegmentError('demux', 'The segment could not be opened'))).toEqual({
+      kind: 'unknown',
+      message: 'The segment could not be opened',
+    });
   });
 });

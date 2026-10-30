@@ -22,7 +22,13 @@ const FIREFOX_UUID = '5f0c1c0e-2b0a-4f5e-9d3e-0a1b2c3d4e5f';
 type Target = 'chromium' | 'firefox';
 
 interface E2eApi {
-  start(url: string, filename: string, tabId?: number, remux?: 'mp4'): Promise<{ jobId: string }>;
+  start(
+    url: string,
+    filename: string,
+    tabId?: number,
+    remux?: 'mp4',
+    hls?: boolean,
+  ): Promise<{ jobId: string }>;
   cancel(jobId: string): Promise<null>;
   openPopup(tabId: number): Promise<void>;
   closeTabs(prefix: string): Promise<void>;
@@ -676,6 +682,67 @@ async function runTarget(target: Target, origin: string): Promise<void> {
     log.push(
       `  ok   MPEG-TS remuxed to MP4 in the worker (${codecs.join(' + ')}, ${duration.toFixed(2)} s), OPFS empty`,
     );
+
+    // 9. HLS (#22): media playlists downloaded segment by segment and remuxed into one MP4.
+    for (const playlist of ['hls/variants/hi.m3u8', 'hls/aes128-iv/index.m3u8']) {
+      // The name ends in .m3u8 on purpose: the worker gives it the container's extension.
+      const base = `servare-e2e-${playlist.split('/')[1] ?? 'hls'}`;
+      const { jobId: hlsId } = await call(
+        'start',
+        `${origin}/media/${playlist}`,
+        `${base}.m3u8`,
+        undefined,
+        undefined,
+        true,
+      );
+      const saved = `${base}.mp4`;
+      await until(`HLS ${playlist} saved`, 60000, async () => {
+        const failed = (await call('failures')).find((f) => f.jobId === hlsId);
+        if (failed) throw new Error(`HLS job failed: ${JSON.stringify(failed.error)}`);
+        return (await call('downloads')).find(
+          (d) => d.filename.endsWith(saved) && d.state === 'complete',
+        );
+      });
+      const hlsFile = path.join(downloads, saved);
+      const hlsProbe = JSON.parse(
+        execFileSync(
+          'ffprobe',
+          [
+            '-v',
+            'error',
+            '-count_packets',
+            '-show_format',
+            '-show_streams',
+            '-of',
+            'json',
+            hlsFile,
+          ],
+          { encoding: 'utf8' },
+        ),
+      ) as {
+        format: { format_name: string; duration: string; start_time: string };
+        streams: { codec_type: string; codec_name: string; nb_read_packets?: string }[];
+      };
+      const hlsCodecs = hlsProbe.streams.map((st) => `${st.codec_type}:${st.codec_name}`).sort();
+      const hlsDuration = Number(hlsProbe.format.duration);
+      assert(hlsProbe.format.format_name.includes('mp4'), `not an MP4: ${playlist}`);
+      assert(
+        JSON.stringify(hlsCodecs) === JSON.stringify(['audio:aac', 'video:h264']),
+        `unexpected streams for ${playlist}: ${hlsCodecs.join(', ')}`,
+      );
+      assert(Math.abs(hlsDuration - 6) <= 0.1, `unexpected duration ${hlsDuration} (${playlist})`);
+      assert(
+        Math.abs(Number(hlsProbe.format.start_time)) <= 0.001,
+        `output does not start at 0 (${playlist})`,
+      );
+      const frames = hlsProbe.streams.find((st) => st.codec_type === 'video')?.nb_read_packets;
+      assert(frames === '90', `expected 90 video frames, got ${frames} (${playlist})`);
+      execFileSync('ffmpeg', ['-v', 'error', '-xerror', '-i', hlsFile, '-f', 'null', '-']);
+      await waitClosedAndClean(`after the HLS job ${playlist}`);
+      log.push(
+        `  ok   HLS ${playlist} saved as ${saved} (${hlsCodecs.join(' + ')}, ${hlsDuration.toFixed(2)} s), OPFS empty`,
+      );
+    }
   } finally {
     await browser.close().catch(() => undefined);
     if (process.env['E2E_KEEP']) console.info(`  kept ${work}`);

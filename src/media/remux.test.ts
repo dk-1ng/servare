@@ -1,150 +1,321 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createLibav, LIBAV_FACTORY_PATH, LIBAV_WASM_PATH } from './libav/loader';
-import type { Libav, LibavFactory } from './libav/types';
-import { remuxToMp4 } from './remux';
+import {
+  codecsOf,
+  decodeErrors,
+  FIXTURES,
+  hasFfprobe,
+  memoryFile,
+  newLibav,
+  packetCount,
+  probe,
+  timing,
+} from '../../test/media/probe';
+import { createRemuxer, remuxFile, SegmentError } from './remux';
 
-const ROOT = path.resolve(import.meta.dirname, '../..');
-const DIST = path.join(ROOT, 'vendor/libav/dist');
-const SEGMENTS = path.join(ROOT, 'test/fixtures/out/hls/variants');
-const hasTool = (name: string): boolean =>
-  spawnSync(name, ['-version'], { stdio: 'ignore' }).status === 0;
-const hasFfprobe = hasTool('ffprobe');
-const segmentFiles = ['hi_000.ts', 'hi_001.ts', 'hi_002.ts'].map((f) => path.join(SEGMENTS, f));
+const fixture = (rel: string): string => path.join(FIXTURES, rel);
+const read = (rel: string): Uint8Array => new Uint8Array(readFileSync(fixture(rel)));
+const concat = (...parts: Uint8Array[]): Uint8Array => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.byteLength;
+  }
+  return out;
+};
+const have = (...rels: string[]): boolean => rels.every((r) => existsSync(fixture(r)));
 
-/** One fresh instance per test, as the worker does per job. */
-async function newLibav(): Promise<Libav> {
-  const url = pathToFileURL(path.join(DIST, path.basename(LIBAV_FACTORY_PATH))).href;
-  const module = (await import(/* @vite-ignore */ url)) as { default: LibavFactory };
-  // Node's Emscripten runtime reads the WASM from a file path.
-  return createLibav(module.default, path.join(DIST, path.basename(LIBAV_WASM_PATH)));
-}
-
-/** Collects positional writes into a buffer the way an OPFS file would. */
-function memoryFile(): {
-  write: (position: number, data: Uint8Array) => void;
-  bytes: () => Uint8Array;
-  positions: number[];
-} {
-  let buffer = new Uint8Array(0);
-  const positions: number[] = [];
-  return {
-    positions,
-    write(position, data) {
-      positions.push(position);
-      const end = position + data.byteLength;
-      if (end > buffer.byteLength) {
-        const grown = new Uint8Array(end);
-        grown.set(buffer);
-        buffer = grown;
-      }
-      buffer.set(data, position);
-    },
-    bytes: () => buffer,
-  };
-}
+const TS = ['hls/variants/hi_000.ts', 'hls/variants/hi_001.ts', 'hls/variants/hi_002.ts'];
+const FMP4 = ['hls/fmp4/seg_000.m4s', 'hls/fmp4/seg_001.m4s', 'hls/fmp4/seg_002.m4s'];
+const VP9 = [1, 2, 3].map((n) => `dash/vp9/chunk-0-0000${String(n)}.webm`);
 
 let work: string;
 beforeAll(() => {
   work = mkdtempSync(path.join(tmpdir(), 'servare-remux-'));
-}, 120_000);
+});
 afterAll(() => {
   rmSync(work, { recursive: true, force: true });
 });
 
-const haveSegments = (): boolean => segmentFiles.every((f) => existsSync(f));
+/** Saves the output where ffprobe can read it. */
+function save(name: string, bytes: Uint8Array): string {
+  const file = path.join(work, name);
+  writeFileSync(file, bytes);
+  return file;
+}
 
-describe('remuxToMp4', () => {
-  it.skipIf(!haveSegments())(
-    'stream-copies three concatenated MPEG-TS segments into a valid MP4',
-    async () => {
-      const input = Buffer.concat(segmentFiles.map((f) => readFileSync(f)));
-      const libav = await newLibav();
-      const out = memoryFile();
-      const size = await remuxToMp4(libav, new Uint8Array(input), out.write);
-      const mp4 = out.bytes();
+describe('remuxFile', () => {
+  it.skipIf(!have(TS[0]!))('stream-copies one MPEG-TS segment into an MP4', async () => {
+    const libav = await newLibav();
+    const out = memoryFile();
+    const result = await remuxFile(libav, read(TS[0]!), out.write);
+    const mp4 = out.bytes();
 
-      expect(size).toBe(mp4.byteLength);
-      expect(size).toBeGreaterThan(1000);
-      expect(new TextDecoder().decode(mp4.subarray(4, 8))).toBe('ftyp');
-      // The muxer goes back to patch the header once the data size is known.
-      expect(out.positions.some((p, i) => i > 0 && p < (out.positions[i - 1] ?? 0))).toBe(true);
-      expect(libav.onwrite).toBeNull();
+    expect(result.container).toBe('mp4');
+    expect(result.size).toBe(mp4.byteLength);
+    expect(result.skippedSeconds).toBe(0);
+    expect(result.durationSeconds).toBeCloseTo(2, 1);
+    expect(new TextDecoder().decode(mp4.subarray(4, 8))).toBe('ftyp');
+    // The muxer goes back to patch the header once the data size is known.
+    expect(out.positions.some((p, i) => i > 0 && p < (out.positions[i - 1] ?? 0))).toBe(true);
+    expect(libav.onwrite).toBeNull();
 
-      if (!hasFfprobe) return;
-      const file = path.join(work, 'remuxed.mp4');
-      writeFileSync(file, mp4);
-      const probe = JSON.parse(
-        execFileSync(
-          'ffprobe',
-          ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', file],
-          { encoding: 'utf8' },
-        ),
-      ) as {
-        format: { format_name: string; duration: string };
-        streams: { codec_type: string; codec_name: string }[];
-      };
-      expect(probe.format.format_name).toContain('mp4');
-      expect(Number(probe.format.duration)).toBeCloseTo(6, 0);
-      expect(Math.abs(Number(probe.format.duration) - 6)).toBeLessThanOrEqual(0.1);
-      expect(probe.streams.map((s) => `${s.codec_type}:${s.codec_name}`).sort()).toEqual([
-        'audio:aac',
-        'video:h264',
-      ]);
-      // Decoding everything must not raise a single error.
-      const decode = spawnSync('ffmpeg', ['-v', 'error', '-xerror', '-i', file, '-f', 'null', '-']);
-      expect(decode.status, decode.stderr.toString()).toBe(0);
-      expect(decode.stderr.toString()).toBe('');
-    },
-    60_000,
-  );
+    if (!hasFfprobe) return;
+    const file = save('one.mp4', mp4);
+    const info = probe(file);
+    expect(info.format.format_name).toContain('mp4');
+    expect(Math.abs(Number(info.format.duration) - 2)).toBeLessThanOrEqual(0.1);
+    expect(codecsOf(info)).toEqual(['audio:aac', 'video:h264']);
+    expect(decodeErrors(file)).toBe('');
+  });
 
-  it('rejects input that is not media and frees what it created', async () => {
+  it('rejects input that is not media as a segment error and frees what it created', async () => {
     const libav = await newLibav();
     const out = memoryFile();
     const garbage = new Uint8Array(4096).map((_, i) => (i * 31) % 251);
-    await expect(remuxToMp4(libav, garbage, out.write)).rejects.toThrow();
+    const error = await remuxFile(libav, garbage, out.write).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SegmentError);
+    expect((error as SegmentError).reason).toBe('demux');
     expect(out.positions).toEqual([]);
     expect(libav.onwrite).toBeNull();
-    // The input file is gone from libav's file system.
+    // The segment file is gone from libav's file system.
     await expect(async () => {
-      await libav.unlink('input');
+      await libav.unlink('segment');
     }).rejects.toBeDefined();
   });
 
-  it.skipIf(!haveSegments())('stops after the read batch in which it was aborted', async () => {
-    const input = Buffer.concat(segmentFiles.map((f) => readFileSync(f)));
+  it.skipIf(!have(TS[0]!))('stops after the read batch in which it was aborted', async () => {
     const libav = await newLibav();
     const controller = new AbortController();
     const reason = new Error('stop');
-    const read = libav.ff_read_frame_multi.bind(libav);
+    const readFrames = libav.ff_read_frame_multi.bind(libav);
     let reads = 0;
     libav.ff_read_frame_multi = (...args) => {
       reads++;
       controller.abort(reason);
-      return read(...args);
+      return readFrames(...args);
     };
     const trailer = vi.spyOn(libav, 'av_write_trailer');
     await expect(
-      remuxToMp4(libav, new Uint8Array(input), memoryFile().write, controller.signal),
+      remuxFile(libav, read(TS[0]!), memoryFile().write, controller.signal),
     ).rejects.toBe(reason);
     expect(reads).toBe(1);
     expect(trailer).not.toHaveBeenCalled();
     expect(libav.onwrite).toBeNull();
   });
 
-  it.skipIf(!haveSegments())('rethrows a failed write after libav returns', async () => {
-    const input = readFileSync(segmentFiles[0]!);
+  it.skipIf(!have(TS[0]!))('rethrows a failed write after libav returns', async () => {
     const libav = await newLibav();
     const failure = new DOMException('full', 'QuotaExceededError');
     await expect(
-      remuxToMp4(libav, new Uint8Array(input), () => {
+      remuxFile(libav, read(TS[0]!), () => {
         throw failure;
       }),
     ).rejects.toBe(failure);
   });
+});
+
+describe('createRemuxer', () => {
+  it.skipIf(!have(...TS))(
+    'joins MPEG-TS segments demuxed one by one into a gapless MP4 starting at 0',
+    async () => {
+      const libav = await newLibav();
+      const out = memoryFile();
+      const remuxer = createRemuxer(libav, out.write);
+      try {
+        for (const segment of TS) await remuxer.add({ data: read(segment) });
+        expect(remuxer.container).toBe('mp4');
+        const result = await remuxer.finish();
+        expect(result.durationSeconds).toBeCloseTo(6, 1);
+      } finally {
+        await remuxer.dispose();
+        await remuxer.dispose(); // idempotent
+      }
+      expect(libav.onwrite).toBeNull();
+      if (!hasFfprobe) return;
+      const file = save('ts.mp4', out.bytes());
+      const info = probe(file);
+      expect(Math.abs(Number(info.format.start_time))).toBeLessThanOrEqual(0.001);
+      expect(Math.abs(Number(info.format.duration) - 6)).toBeLessThanOrEqual(0.1);
+      expect(codecsOf(info)).toEqual(['audio:aac', 'video:h264']);
+      expect(packetCount(info, 'video')).toBe(90);
+      for (const stream of timing(file).values())
+        expect(stream).toEqual({ gaps: [], monotonic: true });
+      expect(decodeErrors(file)).toBe('');
+    },
+    60_000,
+  );
+
+  it.skipIf(!have('hls/fmp4/init.mp4', ...FMP4))(
+    'joins fMP4 fragments, each demuxed with the init section in front',
+    async () => {
+      const libav = await newLibav();
+      const out = memoryFile();
+      const remuxer = createRemuxer(libav, out.write);
+      const init = read('hls/fmp4/init.mp4');
+      try {
+        for (const segment of FMP4) await remuxer.add({ data: concat(init, read(segment)) });
+        expect((await remuxer.finish()).container).toBe('mp4');
+      } finally {
+        await remuxer.dispose();
+      }
+      if (!hasFfprobe) return;
+      const file = save('fmp4.mp4', out.bytes());
+      const info = probe(file);
+      expect(Math.abs(Number(info.format.start_time))).toBeLessThanOrEqual(0.001);
+      expect(Math.abs(Number(info.format.duration) - 6)).toBeLessThanOrEqual(0.1);
+      expect(packetCount(info, 'video')).toBe(90);
+      for (const stream of timing(file).values())
+        expect(stream).toEqual({ gaps: [], monotonic: true });
+      expect(decodeErrors(file)).toBe('');
+    },
+    60_000,
+  );
+
+  it.skipIf(!have('dash/vp9/init-0.webm', ...VP9))(
+    'writes WebM for VP9 from DASH init and media segments',
+    async () => {
+      const libav = await newLibav();
+      const out = memoryFile();
+      const remuxer = createRemuxer(libav, out.write);
+      const init = read('dash/vp9/init-0.webm');
+      try {
+        for (const segment of VP9) await remuxer.add({ data: concat(init, read(segment)) });
+        expect((await remuxer.finish()).container).toBe('webm');
+      } finally {
+        await remuxer.dispose();
+      }
+      if (!hasFfprobe) return;
+      const file = save('vp9.webm', out.bytes());
+      const info = probe(file);
+      expect(info.format.format_name).toContain('webm');
+      expect(codecsOf(info)).toEqual(['video:vp9']);
+      expect(Math.abs(Number(info.format.duration) - 6)).toBeLessThanOrEqual(0.1);
+      expect(packetCount(info, 'video')).toBe(90);
+    },
+    60_000,
+  );
+
+  it.skipIf(!have(...TS))(
+    'keeps the gap of a skipped segment on every stream',
+    async () => {
+      const libav = await newLibav();
+      const out = memoryFile();
+      const remuxer = createRemuxer(libav, out.write);
+      try {
+        await remuxer.add({ data: read(TS[0]!) });
+        remuxer.skip(2);
+        await remuxer.add({ data: read(TS[2]!) });
+        const result = await remuxer.finish();
+        expect(result.skippedSeconds).toBe(2);
+        expect(result.gapSeconds).toBe(2);
+        expect(result.durationSeconds).toBeCloseTo(6, 1);
+      } finally {
+        await remuxer.dispose();
+      }
+      if (!hasFfprobe) return;
+      const file = save('gap.mp4', out.bytes());
+      const info = probe(file);
+      expect(Math.abs(Number(info.format.duration) - 6)).toBeLessThanOrEqual(0.1);
+      expect(packetCount(info, 'video')).toBe(60);
+      for (const stream of timing(file).values()) {
+        expect(stream.monotonic).toBe(true);
+        expect(stream.gaps).toHaveLength(1);
+        expect(Math.abs(stream.gaps[0]! - 2)).toBeLessThanOrEqual(0.1);
+      }
+      expect(decodeErrors(file)).toBe('');
+    },
+    60_000,
+  );
+
+  it.skipIf(!have(...TS))(
+    'leaves no gap for skipped segments at the end',
+    async () => {
+      const libav = await newLibav();
+      const remuxer = createRemuxer(libav, memoryFile().write);
+      try {
+        await remuxer.add({ data: read(TS[0]!) });
+        remuxer.skip(2);
+        remuxer.skip(2);
+        const result = await remuxer.finish();
+        expect(result.skippedSeconds).toBe(4);
+        expect(result.gapSeconds).toBe(0);
+        expect(result.durationSeconds).toBeCloseTo(2, 1);
+      } finally {
+        await remuxer.dispose();
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!have(...TS))(
+    're-anchors a segment repeated after a discontinuity without overlap',
+    async () => {
+      const libav = await newLibav();
+      const out = memoryFile();
+      const remuxer = createRemuxer(libav, out.write);
+      try {
+        await remuxer.add({ data: read(TS[0]!) });
+        await remuxer.add({ data: read(TS[0]!), discontinuity: true });
+        await remuxer.add({ data: read(TS[1]!) });
+        await remuxer.finish();
+      } finally {
+        await remuxer.dispose();
+      }
+      if (!hasFfprobe) return;
+      const file = save('discontinuity.mp4', out.bytes());
+      const info = probe(file);
+      expect(Math.abs(Number(info.format.duration) - 6)).toBeLessThanOrEqual(0.1);
+      expect(packetCount(info, 'video')).toBe(90);
+      for (const stream of timing(file).values()) expect(stream.monotonic).toBe(true);
+      expect(decodeErrors(file)).toBe('');
+    },
+    60_000,
+  );
+
+  it.skipIf(!have(TS[0]!, 'dash/h264/init-1.m4s', 'dash/h264/chunk-1-00002.m4s'))(
+    'refuses an incompatible segment without writing it, and goes on',
+    async () => {
+      const libav = await newLibav();
+      const out = memoryFile();
+      const remuxer = createRemuxer(libav, out.write);
+      try {
+        await remuxer.add({ data: read(TS[0]!) });
+        const audioOnly = concat(read('dash/h264/init-1.m4s'), read('dash/h264/chunk-1-00002.m4s'));
+        const error = await remuxer.add({ data: audioOnly }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(SegmentError);
+        expect((error as SegmentError).reason).toBe('incompatible');
+        await expect(remuxer.add({ data: new Uint8Array(1000) })).rejects.toMatchObject({
+          reason: 'demux',
+        });
+        await remuxer.add({ data: read(TS[1]!) });
+        await remuxer.finish();
+      } finally {
+        await remuxer.dispose();
+      }
+      if (!hasFfprobe) return;
+      const file = save('incompatible.mp4', out.bytes());
+      expect(packetCount(probe(file), 'video')).toBe(60);
+      expect(decodeErrors(file)).toBe('');
+    },
+    60_000,
+  );
+
+  it.skipIf(!have('hls/id3/seg_000.ts'))(
+    'drops a timed ID3 data stream instead of failing the MP4 header',
+    async () => {
+      const libav = await newLibav();
+      const out = memoryFile();
+      const result = await remuxFile(libav, read('hls/id3/seg_000.ts'), out.write);
+      expect(result.container).toBe('mp4');
+      if (!hasFfprobe) return;
+      const file = save('id3.mp4', out.bytes());
+      expect(codecsOf(probe(file))).toEqual(['audio:aac', 'video:h264']);
+      expect(decodeErrors(file)).toBe('');
+    },
+    60_000,
+  );
 });

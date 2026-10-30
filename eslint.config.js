@@ -52,6 +52,12 @@ export default tseslint.config(
     },
   },
   {
+    // Plain Node scripts that generate fixtures (run by make.sh, outside the TypeScript project).
+    files: ['test/fixtures/*.mjs'],
+    extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: { globals: globals.node },
+  },
+  {
     files: ['**/*.config.{js,ts}', 'eslint.config.js'],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: { globals: globals.node },

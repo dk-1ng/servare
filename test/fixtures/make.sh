@@ -56,6 +56,23 @@ lo.m3u8
 M
 )
 
+echo "==> hls with a timed ID3 metadata stream (MPEG-TS)"
+mkdir -p hls/id3
+(
+  cd hls/id3
+  # A hand-written ID3v2.4 tag with one TIT2 (title) frame of synthetic text.
+  printf 'ID3\x04\x00\x00\x00\x00\x00\x23TIT2\x00\x00\x00\x19\x00\x00\x03Synthetic timed metadata' > id3.bin
+  for n in 000 001 002; do
+    # FFmpeg muxes the data stream as private data (stream_type 0x06); ts-metadata.mjs then
+    # declares it as timed ID3 metadata the way HLS streams carry it.
+    "${FF[@]}" -copyts -i "../variants/hi_$n.ts" -f data -i id3.bin -map 0 -map 1 -c copy \
+      -f mpegts "private_$n.ts"
+    node "$HERE/ts-metadata.mjs" "private_$n.ts" "seg_$n.ts"
+    rm "private_$n.ts"
+  done
+  sed 's/hi_\([0-9]*\)\.ts/seg_\1.ts/' ../variants/hi.m3u8 > index.m3u8
+)
+
 echo "==> hls fMP4 (CMAF-style segments)"
 mkdir -p hls/fmp4
 (

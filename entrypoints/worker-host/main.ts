@@ -75,10 +75,17 @@ worker.onerror = (event) => {
 };
 
 const handlers: Partial<Handlers> = {
-  'worker/start': async ({ jobId, url, filename, remux }) => {
+  'worker/start': async ({ jobId, url, filename, remux, hls }) => {
     await cleaned;
     running.add(jobId);
-    worker.postMessage({ type: 'start', jobId, url, filename, ...(remux && { remux }) });
+    worker.postMessage({
+      type: 'start',
+      jobId,
+      url,
+      filename,
+      ...(remux && { remux }),
+      ...(hls && { hls }),
+    });
     return null;
   },
   'worker/cancel': ({ jobId }) => {

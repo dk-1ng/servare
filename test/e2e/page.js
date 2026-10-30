@@ -24,9 +24,10 @@ api.downloads.onChanged.addListener((delta) => {
 globalThis.e2e = {
   /**
    * Sends the temporary 'download/start-direct' request over a port; resolves with {jobId}.
-   * `remux: 'mp4'` asks the worker to stream-copy the file into an MP4 (#17).
+   * `remux: 'mp4'` asks the worker to stream-copy the file (#17); `hls: true` treats the URL as
+   * an HLS media playlist (#22).
    */
-  start(url, filename, tabId, remux) {
+  start(url, filename, tabId, remux, hls) {
     return new Promise((resolve, reject) => {
       const port = connect();
       const timer = setTimeout(() => reject(new Error('no response to start-direct')), 30000);
@@ -46,6 +47,7 @@ globalThis.e2e = {
           filename,
           ...(tabId !== undefined && tabId !== null && { tabId }),
           ...(remux && { remux }),
+          ...(hls && { hls: true }),
         },
       });
     });

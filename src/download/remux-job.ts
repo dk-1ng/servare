@@ -1,5 +1,6 @@
+import type { Container } from '../media/container';
 import type { Libav } from '../media/libav/types';
-import { remuxToMp4 } from '../media/remux';
+import { remuxFile } from '../media/remux';
 import { JobError, type JobWriter } from './direct-job';
 
 /**
@@ -16,8 +17,8 @@ export interface RemuxJobDeps {
   ensureFreeSpace(requiredBytes: number): Promise<void>;
   /** Creates the job's own libav instance (design §8: never shared between jobs). */
   loadLibav(): Promise<Libav>;
-  /** Replaceable for tests; defaults to `remuxToMp4`. */
-  remux?: typeof remuxToMp4;
+  /** Replaceable for tests; defaults to `remuxFile`. */
+  remux?: typeof remuxFile;
   /** Input bytes received so far; `total` is unknown without a trustworthy length. */
   onProgress?(bytesWritten: number, total: number | undefined): void;
 }
@@ -85,17 +86,17 @@ async function fetchInput(
 
 /**
  * TEMPORARY runner behind `download/start-direct` with `remux: 'mp4'` (design §2.3), until the
- * remux pipeline (#22) and the real enqueue flow (#25) exist: fetches one whole media file,
- * stream-copies it into an MP4 written to OPFS and returns the file. The fetcher retries the
- * request; a body cut midway is not resumed. Cancelling
- * through `signal` or any failure removes the temporary file.
+ * real enqueue flow (#25) exists: fetches one whole media file and stream-copies its audio and
+ * video into the container its codecs call for (design §4.4; MP4 for H.264/AAC), written to
+ * OPFS. The fetcher retries the request; a body cut midway is not resumed. Cancelling through
+ * `signal` or any failure removes the temporary file.
  */
 export async function runRemuxJob(
   job: { jobId: string; url: string },
   deps: RemuxJobDeps,
   signal: AbortSignal = new AbortController().signal,
-): Promise<File> {
-  const remux = deps.remux ?? remuxToMp4;
+): Promise<{ file: File; container: Container }> {
+  const remux = deps.remux ?? remuxFile;
   let writer: JobWriter | undefined;
   try {
     const input = await fetchInput(job.url, deps, signal);
@@ -105,7 +106,7 @@ export async function runRemuxJob(
     if (signal.aborted) throw new JobError({ kind: 'cancelled' });
     const output = await deps.openWriter(job.jobId);
     writer = output;
-    const size = await remux(
+    const { size, container } = await remux(
       libav,
       input,
       (position, data) => {
@@ -114,7 +115,7 @@ export async function runRemuxJob(
       signal,
     );
     if (size === 0) throw new JobError({ kind: 'incomplete', ratio: 0 });
-    return await output.finish();
+    return { file: await output.finish(), container };
   } catch (error) {
     await writer?.remove().catch(() => {
       // The original failure is the useful one; host cleanup removes leftovers.

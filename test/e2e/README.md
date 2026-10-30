@@ -32,6 +32,11 @@ What it checks, per browser (issue #6):
    must report H.264 + AAC lasting 2 s, `ffmpeg -xerror` must decode it without errors, and
    OPFS `servare-tmp` must be empty afterwards. Needs `ffprobe`/`ffmpeg` and the fixtures
    (`pnpm fixtures`).
+9. HLS (issue #22): `download/start-direct` with `hls: true` on the fixture media playlists
+   `hls/variants/hi.m3u8` (MPEG-TS) and `hls/aes128-iv/index.m3u8` (AES-128) downloads the
+   segments, remuxes them into one MP4 and saves it as `<name>.mp4` although the request named
+   it `.m3u8`; `ffprobe` must report H.264 + AAC starting at 0 and lasting 6 s (±0.1 s) with 90
+   video frames, `ffmpeg -xerror` must decode it cleanly, and OPFS must be empty afterwards.
 
 How it works: `puppeteer-core` (no bundled browser) drives Chromium over CDP and Firefox over
 WebDriver BiDi, with isolated temporary profiles and download directories under the OS temp

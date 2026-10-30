@@ -3,6 +3,13 @@
  * fetching, header replay and the protection verdict on the whole item live elsewhere.
  * Unknown tags are ignored, as RFC 8216 §6.3.1 requires of clients.
  */
+import {
+  chooseContainer,
+  codecFromRfc6381,
+  codecType,
+  type Container,
+  type ContainerStream,
+} from '../media/container';
 
 export class PlaylistError extends Error {
   override name = 'PlaylistError';
@@ -60,6 +67,11 @@ export interface ByteRange {
 export interface MapInfo {
   uri: string;
   byteRange?: ByteRange | undefined;
+  /**
+   * Encryption in effect at the `EXT-X-MAP` tag (RFC 8216 §4.3.2.4); undefined when clear. An
+   * `AES-128` init section needs an explicit `IV` (§4.3.2.5): the caller must refuse one without.
+   */
+  key?: KeyInfo | undefined;
 }
 
 export interface Segment {
@@ -309,7 +321,11 @@ function parseMedia(lines: string[], base: string): MediaPlaylist {
       if (a['URI'] === undefined) continue;
       const r = a['BYTERANGE'] === undefined ? undefined : parseByteRange(a['BYTERANGE']);
       const uri = resolve(a['URI'], base);
-      map = { uri, byteRange: r && { length: r.length, offset: r.offset ?? 0 } };
+      map = {
+        uri,
+        byteRange: r && { length: r.length, offset: r.offset ?? 0 },
+        key: key && key.method !== 'NONE' ? key : undefined,
+      };
       // A segment range without an offset in the same file continues after the init section.
       if (map.byteRange && !rangeEnd.has(uri))
         rangeEnd.set(uri, map.byteRange.offset + map.byteRange.length);
@@ -342,36 +358,26 @@ function parseMedia(lines: string[], base: string): MediaPlaylist {
   };
 }
 
-export type Container = 'mp4' | 'mkv' | 'webm';
-
-const MP4_VIDEO = /^(avc[1-4]|hvc1|hev1|dvh1|dvhe)(\.|$)/i;
-const MP4_AUDIO = /^(mp4a\.(40\.\d+|6b|69|a5|a6)|ac-3|ec-3)$/i;
-const TEXT = /^(wvtt|stpp)(\.|$)/i;
-const OPEN_VIDEO = /^(vp0?9|av01)(\.|$)/i;
-const OPEN_AUDIO = /^(opus|vorbis|flac)$/i;
-const WEBM_CODEC = /^(vp0?8|vp0?9|av01|opus|vorbis)(\.|$)/i;
+export type { Container };
 
 /**
- * Chooses the output container from an RFC 6381 `CODECS` list (design §4.4): H.264/H.265 + AAC
- * → MP4; VP9/AV1/Opus/Vorbis → WebM when every track fits it, MKV otherwise. Returns undefined
- * when any codec is unknown (design §3.3). Subtitle codecs do not influence the choice. An absent
- * `CODECS` also gives undefined, but that is not "unknown": see `isHiddenVariant`.
+ * Chooses the output container from an RFC 6381 `CODECS` list with the same table the remuxer
+ * applies to demuxed streams (design §4.4, `src/media/container.ts`). Every H.264/HEVC entry is
+ * assumed to come with its codec configuration (as in fMP4); MPEG-TS has none, so the remuxer
+ * may still refuse a combination that only Matroska could hold. Returns undefined when any codec
+ * is unknown (design §3.3). Subtitle codecs do not influence the choice. An absent `CODECS` also
+ * gives undefined, but that is not "unknown": see `isHiddenVariant`.
  */
 export function containerForCodecs(codecs: string | undefined): Container | undefined {
-  const list = (codecs ?? '')
-    .split(',')
-    .map((c) => c.trim())
-    .filter((c) => c !== '' && !TEXT.test(c));
-  if (list.length === 0) return undefined;
-  if (list.every((c) => MP4_VIDEO.test(c) || MP4_AUDIO.test(c))) return 'mp4';
-  if (
-    list.every(
-      (c) => MP4_VIDEO.test(c) || MP4_AUDIO.test(c) || OPEN_VIDEO.test(c) || OPEN_AUDIO.test(c),
-    )
-  ) {
-    return list.every((c) => WEBM_CODEC.test(c)) ? 'webm' : 'mkv';
+  const streams: ContainerStream[] = [];
+  for (const entry of (codecs ?? '').split(',')) {
+    if (entry.trim() === '') continue;
+    const codec = codecFromRfc6381(entry);
+    if (codec === undefined) return undefined;
+    if (codec === 'subtitle') continue;
+    streams.push({ type: codecType(codec), codec, hasExtradata: true });
   }
-  return undefined;
+  return chooseContainer(streams);
 }
 
 /**
