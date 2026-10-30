@@ -11,8 +11,13 @@ export type ToWorker =
       jobId: string;
       url: string;
       filename: string;
-      /** TEMPORARY (design §2.3): stream-copy the fetched file into an MP4. */
+      /**
+       * TEMPORARY (design §2.3): stream-copy the fetched file; the container follows its codecs
+       * (design §4.4), so the delivered name may get another extension.
+       */
       remux?: 'mp4' | undefined;
+      /** TEMPORARY (design §2.3): `url` is an HLS media playlist to download and remux. */
+      hls?: true | undefined;
     }
   | { type: 'cancel'; jobId: string };
 
@@ -30,6 +35,7 @@ export function isToWorker(value: unknown): value is ToWorker {
     v.type === 'start' &&
     typeof v.url === 'string' &&
     typeof v.filename === 'string' &&
-    (v.remux === undefined || v.remux === 'mp4')
+    (v.remux === undefined || v.remux === 'mp4') &&
+    (v.hls === undefined || v.hls === true)
   );
 }

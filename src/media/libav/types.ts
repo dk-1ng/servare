@@ -36,6 +36,8 @@ export interface LibavPacket {
   flags?: number;
   duration?: number;
   durationhi?: number;
+  /** Packet side data, copied through as it is. */
+  side_data?: { data: Uint8Array; type: number }[] | null;
 }
 
 export interface MuxerOptions {
@@ -59,16 +61,18 @@ export interface ReadMultiOptions {
 export interface Libav {
   /**
    * Called synchronously for every write to a block writer device. `data` may be a view into
-   * WASM memory that is only valid during the call: copy or consume it before returning.
+   * WASM memory that is only valid during the call: copy or consume it before returning. It can
+   * be an `Int8Array` (design §4.4, Evidence).
    */
-  onwrite: ((name: string, position: number, data: Uint8Array) => void) | null | undefined;
+  onwrite:
+    ((name: string, position: number, data: Uint8Array | Int8Array) => void) | null | undefined;
 
   writeFile(name: string, content: Uint8Array): MaybePromise<unknown>;
   unlink(name: string): MaybePromise<unknown>;
   mkwriterdev(name: string, mode?: number): MaybePromise<unknown>;
 
-  /** Returns `[AVFormatContext, streams]`. */
-  ff_init_demuxer_file(name: string): MaybePromise<[number, LibavStream[]]>;
+  /** Returns `[AVFormatContext, streams]`; `format` forces a demuxer instead of probing. */
+  ff_init_demuxer_file(name: string, format?: string): MaybePromise<[number, LibavStream[]]>;
   /** Returns `[AVFormatContext, AVOutputFormat, AVIOContext, AVStream[]]`. */
   ff_init_muxer(
     options: MuxerOptions,
@@ -88,6 +92,15 @@ export interface Libav {
   av_packet_alloc(): MaybePromise<number>;
   av_packet_free_js(packet: number): MaybePromise<unknown>;
   ff_error(code: number): MaybePromise<string>;
+
+  /** FFmpeg's short codec name for an `AVCodecID` (`h264`, `aac`, …). */
+  avcodec_get_name(codecId: number): MaybePromise<string>;
+  AVCodecParameters_sample_rate(codecpar: number): MaybePromise<number>;
+  AVCodecParameters_ch_layout_nb_channels(codecpar: number): MaybePromise<number>;
+  AVCodecParameters_width(codecpar: number): MaybePromise<number>;
+  AVCodecParameters_height(codecpar: number): MaybePromise<number>;
+  /** A copy of the codec configuration, or null when the stream has none. */
+  ff_copyout_codecpar_extradata(codecpar: number): MaybePromise<Uint8Array | null>;
 }
 
 /** The Emscripten factory exported by `libav-*.wasm.mjs`. */

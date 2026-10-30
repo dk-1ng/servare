@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Libav } from '../media/libav/types';
-import type { remuxToMp4 } from '../media/remux';
+import type { remuxFile } from '../media/remux';
 import { toDownloadError, type JobWriter } from './direct-job';
 import { REMUX_INPUT_LIMIT, runRemuxJob } from './remux-job';
 import { isToWorker } from './worker-messages';
@@ -16,7 +16,7 @@ function body(...chunks: number[][]): ReadableStream<Uint8Array> {
 
 const fakeLibav = {} as Libav;
 
-function setup(response: Response, remux?: typeof remuxToMp4) {
+function setup(response: Response, remux?: typeof remuxFile) {
   const writes: [number, number[]][] = [];
   const file = new File(['mp4'], 'f');
   const writer: JobWriter = {
@@ -34,12 +34,12 @@ function setup(response: Response, remux?: typeof remuxToMp4) {
     onProgress: vi.fn(),
     remux:
       remux ??
-      vi.fn<typeof remuxToMp4>(async (_libav, input, write) => {
+      vi.fn<typeof remuxFile>(async (_libav, input, write) => {
         inputs.push([...input]);
         // Out of order, as the MP4 muxer does when it patches the header.
         write(4, new Uint8Array([9, 9]));
         write(0, new Uint8Array([1, 2, 3, 4]));
-        return 6;
+        return { size: 6, container: 'mp4', durationSeconds: 1, skippedSeconds: 0 };
       }),
   };
   return { deps, writer, writes, file, inputs };
@@ -50,7 +50,7 @@ const job = { jobId: 'j1', url: 'http://x/a.ts' };
 describe('runRemuxJob', () => {
   it('fetches the whole input, remuxes it with the job instance and returns the file', async () => {
     const s = setup(new Response(body([1, 2], [3]), { headers: { 'content-length': '3' } }));
-    expect(await runRemuxJob(job, s.deps)).toBe(s.file);
+    expect(await runRemuxJob(job, s.deps)).toEqual({ file: s.file, container: 'mp4' });
     expect(s.inputs).toEqual([[1, 2, 3]]);
     expect(s.deps.remux).toHaveBeenCalledWith(
       fakeLibav,
@@ -134,7 +134,7 @@ describe('runRemuxJob', () => {
     const controller = new AbortController();
     const s = setup(
       new Response(body([1])),
-      vi.fn<typeof remuxToMp4>(async (_libav, _input, _write, signal) => {
+      vi.fn<typeof remuxFile>(async (_libav, _input, _write, signal) => {
         controller.abort();
         throw signal?.reason;
       }),
@@ -147,7 +147,12 @@ describe('runRemuxJob', () => {
   it('treats an empty output as a failure', async () => {
     const s = setup(
       new Response(body([1])),
-      vi.fn(async () => 0),
+      vi.fn<typeof remuxFile>(async () => ({
+        size: 0,
+        container: 'mp4',
+        durationSeconds: 0,
+        skippedSeconds: 0,
+      })),
     );
     const error = await runRemuxJob(job, s.deps).catch((e: unknown) => e);
     expect(toDownloadError(error)).toEqual({ kind: 'incomplete', ratio: 0 });
@@ -166,5 +171,11 @@ describe('isToWorker', () => {
 
   it('rejects an unknown remux target', () => {
     expect(isToWorker({ ...start, remux: 'mkv' })).toBe(false);
+  });
+
+  it('accepts hls: true and nothing else', () => {
+    expect(isToWorker({ ...start, hls: true })).toBe(true);
+    expect(isToWorker({ ...start, hls: false })).toBe(false);
+    expect(isToWorker({ ...start, hls: 'yes' })).toBe(false);
   });
 });
